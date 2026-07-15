@@ -162,6 +162,21 @@
   }
   body.mobile-mode #month-header{top:32px;}
   body.mobile-mode #day-header{top:66px;}
+
+  /* Custom scroll indicators — iOS Safari doesn't render styled (or even
+     default) scrollbars reliably, so without these there's no visual cue
+     for how far you've scrolled or how much further there is to go. */
+  #mobile-hscroll, #mobile-vscroll{display:none;}
+  body.mobile-mode #mobile-hscroll{
+    display:block;position:fixed;left:0;right:0;bottom:0;height:5px;
+    background:rgba(0,0,0,.06);z-index:230;pointer-events:none;
+  }
+  body.mobile-mode #mobile-hscroll-thumb{position:absolute;top:0;bottom:0;left:0;background:rgba(37,99,235,.55);border-radius:3px;}
+  body.mobile-mode #mobile-vscroll{
+    display:block;position:fixed;top:0;bottom:0;right:0;width:5px;
+    background:rgba(0,0,0,.06);z-index:230;pointer-events:none;
+  }
+  body.mobile-mode #mobile-vscroll-thumb{position:absolute;left:0;right:0;top:0;background:rgba(37,99,235,.55);border-radius:3px;}
 </style>
 </head>
 <body>
@@ -222,6 +237,8 @@
   <div id="current-assignee-banner"></div>
   <div id="grid"></div>
 </div>
+<div id="mobile-hscroll"><div id="mobile-hscroll-thumb"></div></div>
+<div id="mobile-vscroll"><div id="mobile-vscroll-thumb"></div></div>
 
 <div id="tooltip"></div>
 
@@ -1149,6 +1166,7 @@ function render() {
   grid.appendChild(body);
   grid.style.height = (56 + totalHeight) + "px";
   updateAssigneeBanner();
+  updateScrollbars();
 }
 
 // Mobile: the top banner tracks whichever assignee's lane is currently
@@ -1164,7 +1182,45 @@ function updateAssigneeBanner() {
   }
   banner.textContent = "👤 " + current;
 }
-document.getElementById("timeline-wrap").addEventListener("scroll", updateAssigneeBanner, { passive: true });
+
+// Custom scroll-position indicators for mobile (iOS Safari doesn't render
+// styled — or reliably even default — scrollbars on a custom-scrolled div).
+function updateScrollbars() {
+  if (!document.body.classList.contains("mobile-mode")) return;
+  const wrap = document.getElementById("timeline-wrap");
+  const hTrack = document.getElementById("mobile-hscroll");
+  const hThumb = document.getElementById("mobile-hscroll-thumb");
+  const vTrack = document.getElementById("mobile-vscroll");
+  const vThumb = document.getElementById("mobile-vscroll-thumb");
+
+  const scrollableX = wrap.scrollWidth > wrap.clientWidth;
+  hTrack.style.visibility = scrollableX ? "visible" : "hidden";
+  if (scrollableX) {
+    const trackW = hTrack.clientWidth;
+    const thumbW = Math.max(30, trackW * (wrap.clientWidth / wrap.scrollWidth));
+    const maxThumbLeft = trackW - thumbW;
+    const scrollRatio = wrap.scrollLeft / (wrap.scrollWidth - wrap.clientWidth);
+    hThumb.style.width = thumbW + "px";
+    hThumb.style.left = (maxThumbLeft * scrollRatio) + "px";
+  }
+
+  const scrollableY = wrap.scrollHeight > wrap.clientHeight;
+  vTrack.style.visibility = scrollableY ? "visible" : "hidden";
+  if (scrollableY) {
+    const trackH = vTrack.clientHeight;
+    const thumbH = Math.max(30, trackH * (wrap.clientHeight / wrap.scrollHeight));
+    const maxThumbTop = trackH - thumbH;
+    const scrollRatio = wrap.scrollTop / (wrap.scrollHeight - wrap.clientHeight);
+    vThumb.style.height = thumbH + "px";
+    vThumb.style.top = (maxThumbTop * scrollRatio) + "px";
+  }
+}
+
+document.getElementById("timeline-wrap").addEventListener("scroll", () => {
+  updateAssigneeBanner();
+  updateScrollbars();
+}, { passive: true });
+window.addEventListener("resize", updateScrollbars);
 
 const _measureCanvas = document.createElement("canvas");
 const _measureCtx = _measureCanvas.getContext("2d");
