@@ -130,7 +130,11 @@
   body.mobile-mode #assignee-filter, body.mobile-mode #activity-filter{width:100%;}
   body.mobile-mode #assignee-filter button, body.mobile-mode #activity-filter button{width:100%;}
 
-  body.mobile-mode #drawer-backdrop.open{display:block;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:205;}
+  body.mobile-mode #drawer-backdrop.open{display:block;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:150;}
+  /* #toolbar (position:relative + z-index) creates its own stacking context,
+     so the drawer nested inside it only out-stacks the backdrop if #toolbar
+     itself out-stacks it — bump #toolbar's z-index well above the backdrop's. */
+  body.mobile-mode #toolbar{z-index:300;}
 
   body.mobile-mode .bar{height:30px;}
   body.mobile-mode .bar .handle{width:16px;} /* 8px is too small to grab reliably with a finger */
