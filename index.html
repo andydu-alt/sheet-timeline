@@ -521,7 +521,29 @@ function jumpToToday(instant) {
   const wrap = document.getElementById("timeline-wrap");
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const todayX = LABEL_W + dayOffset(today) * pxPerDay;
-  wrap.scrollTo({ left: Math.max(0, todayX - wrap.clientWidth / 2), behavior: instant ? "auto" : "smooth" });
+  const targetLeft = Math.max(0, todayX - wrap.clientWidth / 2);
+
+  // Also center vertically on whichever tasks are actually active today,
+  // so Today doesn't just line up the date column — it lands you right on
+  // the current work instead of leaving you to scroll through every lane.
+  let y = 0;
+  const activeYs = [];
+  lanes.forEach((lane) => {
+    const laneHeight = lane.subRowCount * ROW_H;
+    lane.idxs.forEach((idx) => {
+      const t = tasks[idx];
+      if (t.start <= today && today <= t.end) activeYs.push(y + t.subRow * ROW_H + ROW_H / 2);
+    });
+    y += laneHeight;
+  });
+
+  let targetTop = wrap.scrollTop; // no active tasks today — leave vertical position alone
+  if (activeYs.length) {
+    const avgY = activeYs.reduce((a, b) => a + b, 0) / activeYs.length;
+    targetTop = Math.max(0, avgY + 56 - wrap.clientHeight / 2); // +56 = month/day header height
+  }
+
+  wrap.scrollTo({ left: targetLeft, top: targetTop, behavior: instant ? "auto" : "smooth" });
 }
 
 document.getElementById("zoom").addEventListener("change", (e) => {
