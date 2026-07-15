@@ -251,21 +251,22 @@ function commitUndoPoint(preSnapshot) {
 
 async function applySnapshot(snapshot) {
   const byRow = new Map(snapshot.dates.map(d => [d.rowNum, d]));
-  const changedRows = [];
+  const changedRows = []; // { t, origStart, origEnd }
   tasks.forEach((t) => {
     const d = byRow.get(t.rowNum);
     if (!d) return;
     if (t.start.getTime() !== d.start || t.end.getTime() !== d.end) {
+      const origStart = new Date(t.start), origEnd = new Date(t.end);
       t.start = new Date(d.start);
       t.end = new Date(d.end);
-      changedRows.push(t);
+      changedRows.push({ t, origStart, origEnd });
     }
   });
   manualOrder = snapshot.manualOrder;
   localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
   buildLanes();
   render();
-  for (const t of changedRows) await saveDates(t, null);
+  for (const { t, origStart, origEnd } of changedRows) await saveChangedFields(t, origStart, origEnd);
 }
 
 async function undo() {
@@ -502,8 +503,15 @@ async function loadData() {
   try {
     if (holidaySet.size === 0) await loadHolidays();
     const range = `'${CONFIG.SHEET_NAME}'!A2:L3000`;
-    const data = await sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS`);
+    // Fetch formulas too (separately) so we know which Start/End cells are
+    // formula-driven (e.g. "=H4+1" for a dependent Start) and never
+    // overwrite those with a literal value — see saveField() below.
+    const [data, formulaData] = await Promise.all([
+      sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS`),
+      sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS&valueRenderOption=FORMULA`),
+    ]);
     const rows = data.values || [];
+    const formulaRows = formulaData.values || [];
     const C = CONFIG.COL;
     const MIN_SANE_YEAR = 2015; // dates before this are blank/formula cells rendered as the Sheets epoch (1899/1900)
     tasks = [];
@@ -516,6 +524,9 @@ async function loadData() {
       if (!assignee || !start || !end) return; // skip blank/header/incomplete rows
       if (start.getFullYear() < MIN_SANE_YEAR || end.getFullYear() < MIN_SANE_YEAR) { skippedSentinel++; return; }
       const activity = (row[C.ACTIVITY] || "").trim();
+      const fRow = formulaRows[i] || [];
+      const startIsFormula = typeof fRow[C.START] === "string" && fRow[C.START].trim().startsWith("=");
+      const endIsFormula = typeof fRow[C.END] === "string" && fRow[C.END].trim().startsWith("=");
       tasks.push({
         rowNum: i + 2, // actual sheet row (1-based, +1 for header)
         assignee,
@@ -529,6 +540,8 @@ async function loadData() {
         status: row[C.STATUS] || "",
         label: (row[C.FEATURE] || row[C.TASKS] || row[C.ACTIVITY] || "Task"),
         color: colorForActivity(activity),
+        startIsFormula,
+        endIsFormula,
       });
     });
 
@@ -1000,13 +1013,14 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         );
         if (ok) {
           chain.forEach((dep) => {
+            const depOrigStart = new Date(dep.start), depOrigEnd = new Date(dep.end);
             const depWorkDays = countWorkingDays(dep.start, dep.end);
             let newDepStart = new Date(dep.start);
             newDepStart.setDate(newDepStart.getDate() + shiftDays);
             newDepStart = snapForwardToWorkingDay(newDepStart);
             dep.start = newDepStart;
             dep.end = addWorkingDaysInclusive(newDepStart, depWorkDays);
-            chainShifted.push(dep);
+            chainShifted.push({ t: dep, origStart: depOrigStart, origEnd: depOrigEnd });
           });
         }
       }
@@ -1018,8 +1032,20 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     }
 
     render();
-    if (changed) await saveDates(t, bar);
-    for (const dep of chainShifted) await saveDates(dep, null);
+    // Only write the field the user actually dragged — 'move'/'left' drag
+    // the Start handle, 'right' drags the End handle. The other field is
+    // left untouched so any formula in it (e.g. End = Start + duration)
+    // keeps cascading inside the sheet instead of being overwritten.
+    if (changed) {
+      const directField = wasRight ? "end" : "start";
+      await saveChangedFields(t, origStart, origEnd, directField);
+    }
+    // Downstream chained tasks were never directly touched by the user —
+    // only write fields that are NOT formula-driven; formula fields cascade
+    // on their own once the field(s) above land in the sheet.
+    for (const { t: dep, origStart: dOrigStart, origEnd: dOrigEnd } of chainShifted) {
+      await saveChangedFields(dep, dOrigStart, dOrigEnd);
+    }
   });
 }
 
@@ -1047,19 +1073,38 @@ function findDependencyChain(anchorTask, lane, anchorOrigEnd) {
   return chain;
 }
 
-async function saveDates(t, bar) {
-  setStatus(`Saving row ${t.rowNum}…`, false, true);
+// Writes exactly one column (Start=G or End=H) for one task, and marks that
+// cell as no longer a formula (since we just replaced it with a literal
+// date) — the OTHER column is never touched by this call, so a formula
+// there (e.g. an End that computes itself from Start, or a downstream
+// Start that references the previous task's End) is preserved and keeps
+// cascading on its own inside the sheet.
+async function saveField(t, field) {
+  const col = field === "start" ? "G" : "H";
+  const value = field === "start" ? fmtDate(t.start) : fmtDate(t.end);
+  setStatus(`Saving row ${t.rowNum} (${field})…`, false, true);
   try {
-    const range = `'${CONFIG.SHEET_NAME}'!G${t.rowNum}:H${t.rowNum}`;
+    const range = `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`;
     await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
       method: "PUT",
-      body: JSON.stringify({ range, majorDimension: "ROWS", values: [[fmtDate(t.start), fmtDate(t.end)]] }),
+      body: JSON.stringify({ range, majorDimension: "ROWS", values: [[value]] }),
     });
-    setStatus(`Saved row ${t.rowNum}: ${fmtDate(t.start)} → ${fmtDate(t.end)} · ${new Date().toLocaleTimeString()}`);
+    if (field === "start") t.startIsFormula = false; else t.endIsFormula = false;
+    setStatus(`Saved row ${t.rowNum} ${field}: ${value} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
     setStatus("Save failed — reload to resync: " + err.message, true);
   }
+}
+
+// Writes whichever of Start/End actually changed, skipping any field that's
+// formula-driven (unless `force` names it explicitly — used for the field
+// the user directly dragged, which is always OK to overwrite).
+async function saveChangedFields(t, origStart, origEnd, force) {
+  const startChanged = t.start.getTime() !== origStart.getTime();
+  const endChanged = t.end.getTime() !== origEnd.getTime();
+  if (startChanged && (force === "start" || !t.startIsFormula)) await saveField(t, "start");
+  if (endChanged && (force === "end" || !t.endIsFormula)) await saveField(t, "end");
 }
 
 /* ============================================================
