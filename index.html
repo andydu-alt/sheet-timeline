@@ -789,7 +789,11 @@ function persistActivitySelection() {
 }
 
 /* ============================================================
-   Lanes — one row per task, in priority order (earliest Start first)
+   Lanes — tasks packed into rows compactly: only tasks that actually
+   overlap in time share a lane's vertical space with their own row;
+   non-overlapping tasks share a row. Priority order (manual drag order,
+   else earliest Start first) decides which task claims a row first when
+   there's a choice, and still drives dependency-chain matching.
    ============================================================ */
 function buildLanes() {
   const byAssignee = new Map();
@@ -813,8 +817,7 @@ function buildLanes() {
     } else {
       idxs.sort((a, b) => tasks[a].start - tasks[b].start);
     }
-    idxs.forEach((idx, r) => { tasks[idx].subRow = r; });
-    lanes.push({ name, idxs, subRowCount: idxs.length });
+    lanes.push({ name, idxs, subRowCount: 0 }); // subRowCount/subRow filled in below, once dates are known
   }
   lanes.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -826,6 +829,22 @@ function buildLanes() {
   minDate.setDate(minDate.getDate() - 7);
   maxDate.setDate(maxDate.getDate() + 14);
   buildWorkdayIndex();
+
+  // Compact packing needs dayOffset (workdayIndexMap), so it runs after
+  // buildWorkdayIndex() above.
+  lanes.forEach((lane) => {
+    const rowEndCol = []; // last occupied column index per row
+    lane.idxs.forEach((idx) => {
+      const t = tasks[idx];
+      const startCol = dayOffset(t.start), endCol = dayOffset(t.end);
+      let placed = false;
+      for (let r = 0; r < rowEndCol.length; r++) {
+        if (startCol > rowEndCol[r]) { t.subRow = r; rowEndCol[r] = endCol; placed = true; break; }
+      }
+      if (!placed) { t.subRow = rowEndCol.length; rowEndCol.push(endCol); }
+    });
+    lane.subRowCount = Math.max(1, rowEndCol.length);
+  });
 }
 
 // Weekends (and holidays) are compressed out of the grid entirely — Friday
@@ -1040,6 +1059,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   let startX = 0, startY = 0;
   let origStart, origEnd, origStartIdx, origEndIdx, origWorkDays;
   let deltaRows = 0;
+  let origOrderPos = 0; // this task's position within lane.idxs (priority order), captured at drag start
   let preDragSnapshot = null;
   let lastClientX = 0, lastClientY = 0;
 
@@ -1056,6 +1076,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     origStartIdx = dayOffset(origStart);
     origEndIdx = dayOffset(origEnd);
     origWorkDays = origEndIdx - origStartIdx + 1;
+    origOrderPos = lane ? lane.idxs.indexOf(idx) : 0;
     deltaRows = 0;
     lastClientX = e.clientX; lastClientY = e.clientY;
     preDragSnapshot = snapshotState();
@@ -1099,7 +1120,9 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     // Vertical drag (whole-bar move only) = reorder priority within the lane.
     if (mode === "move" && lane) {
       const deltaY = e.clientY - startY;
-      deltaRows = Math.max(-(t.subRow), Math.min(lane.subRowCount - 1 - t.subRow, Math.round(deltaY / ROW_H)));
+      // Bounds are the priority-order position, not the (now dynamic,
+      // overlap-packed) visual row — final row is recomputed on drop.
+      deltaRows = Math.max(-origOrderPos, Math.min(lane.idxs.length - 1 - origOrderPos, Math.round(deltaY / ROW_H)));
       const newTop = origTop + deltaRows * ROW_H;
       bar.style.top = newTop + "px";
       if (extLabel) extLabel.style.top = newTop + "px";
