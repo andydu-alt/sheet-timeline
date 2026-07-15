@@ -106,15 +106,36 @@
   #task-modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
   #task-modal .warn{margin-top:10px;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:8px 10px;border-radius:6px;}
 
-  /* --- Mobile view: bigger touch targets, tighter toolbar, roomier bars --- */
-  body.mobile-mode #toolbar{padding:8px;gap:6px;flex-wrap:nowrap !important;overflow-x:auto;-webkit-overflow-scrolling:touch;}
-  body.mobile-mode #toolbar h1{display:none;} /* reclaim space for controls on a narrow screen */
-  body.mobile-mode #toolbar button, body.mobile-mode #toolbar select{flex-shrink:0;min-height:40px;padding:8px 12px;font-size:13.5px;}
-  body.mobile-mode #status{display:none;} /* status text wraps badly at narrow widths; check via Reload instead */
+  /* --- Mobile view: bigger touch targets, roomier bars, vertical settings drawer --- */
+  #toolbar-controls{display:contents;} /* desktop: transparent wrapper, children stay direct flex items of #toolbar */
+  #btn-drawer-toggle{display:none;}
+  #drawer-backdrop{display:none;}
+
+  body.mobile-mode #toolbar{padding:8px 12px;gap:8px;}
+  body.mobile-mode #btn-drawer-toggle{display:inline-flex;min-height:40px;padding:8px 14px;font-size:14px;}
+
+  /* The settings drawer: a real vertical panel that slides in from the
+     left, toggled independently of the timeline underneath it. */
+  body.mobile-mode #toolbar-controls{
+    display:flex;flex-direction:column;align-items:stretch;gap:8px;
+    position:fixed;top:0;left:0;bottom:0;width:82vw;max-width:300px;
+    background:var(--panel);padding:16px;padding-top:56px;overflow-y:auto;
+    box-shadow:3px 0 20px rgba(0,0,0,.25);z-index:210;
+    transform:translateX(-100%);transition:transform .25s ease;
+  }
+  body.mobile-mode #toolbar-controls.drawer-open{transform:translateX(0);}
+  body.mobile-mode #toolbar-controls button,
+  body.mobile-mode #toolbar-controls select{width:100%;text-align:left;min-height:44px;padding:10px 12px;font-size:14px;}
+  body.mobile-mode #toolbar-controls #status{white-space:normal;font-size:12px;margin-top:4px;}
+  body.mobile-mode #assignee-filter, body.mobile-mode #activity-filter{width:100%;}
+  body.mobile-mode #assignee-filter button, body.mobile-mode #activity-filter button{width:100%;}
+
+  body.mobile-mode #drawer-backdrop.open{display:block;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:205;}
+
   body.mobile-mode .bar{height:30px;}
   body.mobile-mode .bar .handle{width:16px;} /* 8px is too small to grab reliably with a finger */
   body.mobile-mode .lane-label{font-size:11px;}
-  body.mobile-mode #assignee-panel, body.mobile-mode #activity-panel{width:calc(100vw - 16px);max-width:360px;max-height:70vh;}
+  body.mobile-mode #assignee-panel, body.mobile-mode #activity-panel{width:calc(100vw - 16px);max-width:360px;max-height:70vh;z-index:220;} /* above the drawer (210) so filter dropdowns aren't hidden behind it */
   body.mobile-mode #task-modal{width:94vw;padding:16px;}
 </style>
 </head>
@@ -122,45 +143,49 @@
 
 <div id="toolbar">
   <h1>Core General — Timeline</h1>
-  <button id="btn-signin">Sign in with Google</button>
-  <button id="btn-reload" style="display:none;">Reload from Sheet</button>
-  <button id="btn-today" style="display:none;">Today</button>
-  <button id="btn-undo" class="icon-btn" style="display:none;" disabled title="Undo"><span>↶</span><i id="undo-count"></i></button>
-  <button id="btn-redo" class="icon-btn" style="display:none;" disabled title="Redo"><span>↷</span><i id="redo-count"></i></button>
-  <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
-  <button id="btn-apply-frd-spec" style="display:none;">Apply FRD/Spec Formulas</button>
-  <button id="btn-align-waterfall" style="display:none;">Align Waterfall</button>
-  <button id="btn-mobile-toggle">📱 Mobile view</button>
-  <div id="assignee-filter" style="display:none;">
-    <button id="btn-assignee">Assignees ▾</button>
-    <div id="assignee-panel">
-      <input type="text" id="assignee-search" placeholder="Search assignee…">
-      <div class="assignee-actions">
-        <button id="assignee-all">All</button>
-        <button id="assignee-none">None</button>
+  <button id="btn-drawer-toggle">☰ Settings</button>
+  <div id="toolbar-controls">
+    <button id="btn-signin">Sign in with Google</button>
+    <button id="btn-reload" style="display:none;">Reload from Sheet</button>
+    <button id="btn-today" style="display:none;">Today</button>
+    <button id="btn-undo" class="icon-btn" style="display:none;" disabled title="Undo"><span>↶</span><i id="undo-count"></i></button>
+    <button id="btn-redo" class="icon-btn" style="display:none;" disabled title="Redo"><span>↷</span><i id="redo-count"></i></button>
+    <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
+    <button id="btn-apply-frd-spec" style="display:none;">Apply FRD/Spec Formulas</button>
+    <button id="btn-align-waterfall" style="display:none;">Align Waterfall</button>
+    <button id="btn-mobile-toggle">📱 Mobile view</button>
+    <div id="assignee-filter" style="display:none;">
+      <button id="btn-assignee">Assignees ▾</button>
+      <div id="assignee-panel">
+        <input type="text" id="assignee-search" placeholder="Search assignee…">
+        <div class="assignee-actions">
+          <button id="assignee-all">All</button>
+          <button id="assignee-none">None</button>
+        </div>
+        <div id="assignee-list"></div>
       </div>
-      <div id="assignee-list"></div>
     </div>
-  </div>
-  <div id="activity-filter" style="display:none;">
-    <button id="btn-activity">Activities ▾</button>
-    <div id="activity-panel">
-      <input type="text" id="activity-search" placeholder="Search activity…">
-      <div class="assignee-actions">
-        <button id="activity-all">All</button>
-        <button id="activity-none">None</button>
+    <div id="activity-filter" style="display:none;">
+      <button id="btn-activity">Activities ▾</button>
+      <div id="activity-panel">
+        <input type="text" id="activity-search" placeholder="Search activity…">
+        <div class="assignee-actions">
+          <button id="activity-all">All</button>
+          <button id="activity-none">None</button>
+        </div>
+        <div id="activity-list"></div>
       </div>
-      <div id="activity-list"></div>
     </div>
+    <select id="zoom" style="display:none;">
+      <option value="4">Zoom: Quarter</option>
+      <option value="10">Zoom: Month</option>
+      <option value="24" selected>Zoom: Week</option>
+      <option value="42">Zoom: Day</option>
+    </select>
+    <span id="status"></span>
   </div>
-  <select id="zoom" style="display:none;">
-    <option value="4">Zoom: Quarter</option>
-    <option value="10">Zoom: Month</option>
-    <option value="24" selected>Zoom: Week</option>
-    <option value="42">Zoom: Day</option>
-  </select>
-  <span id="status"></span>
 </div>
+<div id="drawer-backdrop"></div>
 
 <div id="legend"></div>
 
@@ -510,6 +535,24 @@ document.getElementById("btn-mobile-toggle").addEventListener("click", () => {
   setMobileMode(!document.body.classList.contains("mobile-mode"));
 });
 setMobileMode(uiState.mobileMode !== undefined ? uiState.mobileMode : window.matchMedia("(max-width: 640px)").matches);
+
+// Settings drawer (mobile view only) — slides the toolbar controls in as a
+// vertical panel instead of a horizontal strip, toggled by the ☰ button.
+function setDrawerOpen(open) {
+  document.getElementById("toolbar-controls").classList.toggle("drawer-open", open);
+  document.getElementById("drawer-backdrop").classList.toggle("open", open);
+}
+document.getElementById("btn-drawer-toggle").addEventListener("click", () => {
+  setDrawerOpen(!document.getElementById("toolbar-controls").classList.contains("drawer-open"));
+});
+document.getElementById("drawer-backdrop").addEventListener("click", () => setDrawerOpen(false));
+
+// Auto-close the drawer after a one-shot action so you can see the result
+// on the timeline right away (filters/zoom stay open since you might want
+// to keep adjusting them).
+["btn-today", "btn-reload", "btn-legend-toggle", "btn-apply-frd-spec", "btn-align-waterfall"].forEach((id) => {
+  document.getElementById(id).addEventListener("click", () => setDrawerOpen(false));
+});
 
 /* ============================================================
    Pan the view by dragging empty space (not a bar / label / control)
