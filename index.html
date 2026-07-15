@@ -65,12 +65,12 @@
   #body-row{position:relative;}
   .lane-bg{position:absolute;left:0;right:0;border-bottom:1px solid var(--border);}
   .lane-label-wrap{position:absolute;left:0;width:100%;}
-  .lane-label{position:sticky;left:0;width:170px;padding:8px 10px;font-size:12px;font-weight:600;background:var(--panel);border-right:1px solid var(--border);height:100%;display:flex;align-items:center;}
+  .lane-label{position:sticky;left:0;z-index:12;width:170px;padding:8px 10px;font-size:12px;font-weight:600;background:var(--panel);border-right:1px solid var(--border);height:100%;display:flex;align-items:center;}
   .lane-label small{display:block;font-weight:400;color:var(--muted);font-size:10.5px;margin-top:2px;}
 
   .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);z-index:5;}
 
-  .bar{position:absolute;height:26px;border-radius:5px;font-size:11.5px;color:#fff;display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:hidden;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15);user-select:none;}
+  .bar{position:absolute;z-index:1;height:26px;border-radius:5px;font-size:11.5px;color:#fff;display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:hidden;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15);user-select:none;}
   .bar:active{cursor:grabbing;}
   .bar.dragging{opacity:.85;box-shadow:0 3px 8px rgba(0,0,0,.3);z-index:40;}
   .bar .handle{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;}
@@ -108,7 +108,7 @@
   <span id="status"></span>
 </div>
 
-<div id="legend" style="display:none;"></div>
+<div id="legend"></div>
 
 <div id="signin-screen">
   <p>Sign in with your Google account to load the <b>Core General Raw Data</b> sheet as a drag-and-drop timeline. Dragging a bar updates the Start/End date cells directly in the sheet.</p>
@@ -151,6 +151,9 @@ const ROW_H = 34;
 const DAY_MS = 86400000;
 let activityColors = new Map();
 let selectedAssignees = null; // null = all selected; else Set of names
+const ORDER_STORAGE_KEY = "sheet_timeline_order_v1";
+let manualOrder = {}; // assignee name -> [rowNum, ...] priority order, drag-to-reorder, persisted locally
+try { manualOrder = JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || "{}"); } catch (e) { manualOrder = {}; }
 
 /* ============================================================
    Auth — cache the access token in localStorage and try a silent
@@ -437,7 +440,17 @@ function buildLanes() {
 
   lanes = [];
   for (const [name, idxs] of byAssignee.entries()) {
-    idxs.sort((a, b) => tasks[a].start - tasks[b].start);
+    const savedOrder = manualOrder[name];
+    if (savedOrder && savedOrder.length) {
+      const pos = new Map(savedOrder.map((rowNum, i) => [rowNum, i]));
+      idxs.sort((a, b) => {
+        const oa = pos.has(tasks[a].rowNum) ? pos.get(tasks[a].rowNum) : Infinity;
+        const ob = pos.has(tasks[b].rowNum) ? pos.get(tasks[b].rowNum) : Infinity;
+        return oa !== ob ? oa - ob : tasks[a].start - tasks[b].start;
+      });
+    } else {
+      idxs.sort((a, b) => tasks[a].start - tasks[b].start);
+    }
     idxs.forEach((idx, r) => { tasks[idx].subRow = r; });
     lanes.push({ name, idxs, subRowCount: idxs.length });
   }
@@ -558,8 +571,8 @@ function render() {
       // position/width and float the label in a separate element just to
       // its right, same idea as Google Sheets' native timeline view.
       const fullText = t.activity ? `${t.label} • ${t.activity}` : t.label;
-      const estTextWidth = fullText.length * 6.3 + 18;
-      const thin = width < estTextWidth;
+      const neededWidth = measureTextWidth(fullText) + 18; // + horizontal padding
+      const thin = width < neededWidth;
       let extLabel = null;
       if (thin) {
         bar.innerHTML = `<div class="handle left"></div><div class="handle right"></div>`;
@@ -574,7 +587,7 @@ function render() {
           <div class="handle left"></div><div class="handle right"></div>`;
       }
 
-      attachDrag(bar, t, extLabel);
+      attachDrag(bar, t, extLabel, lane, idx, top);
       attachTooltip(bar, t);
       if (extLabel) attachTooltip(extLabel, t);
       body.appendChild(bar);
@@ -597,6 +610,13 @@ function render() {
   body.style.height = totalHeight + "px";
   grid.appendChild(body);
   grid.style.height = (56 + totalHeight) + "px";
+}
+
+const _measureCanvas = document.createElement("canvas");
+const _measureCtx = _measureCanvas.getContext("2d");
+_measureCtx.font = "11.5px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif";
+function measureTextWidth(text) {
+  return _measureCtx.measureText(text).width;
 }
 
 function escapeHtml(s) {
@@ -627,10 +647,11 @@ function attachTooltip(bar, t) {
 /* ============================================================
    Drag & resize
    ============================================================ */
-function attachDrag(bar, t, extLabel) {
+function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   let mode = null; // 'move' | 'left' | 'right'
-  let startX = 0;
+  let startX = 0, startY = 0;
   let origStart, origEnd;
+  let deltaRows = 0;
 
   const onMouseDown = (e) => {
     if (e.target.classList.contains("handle")) {
@@ -639,9 +660,12 @@ function attachDrag(bar, t, extLabel) {
       mode = "move";
     }
     startX = e.clientX;
+    startY = e.clientY;
     origStart = new Date(t.start);
     origEnd = new Date(t.end);
+    deltaRows = 0;
     bar.classList.add("dragging");
+    if (mode === "move") bar.style.zIndex = 40;
     document.getElementById("tooltip").style.display = "none";
     e.preventDefault();
     e.stopPropagation(); // don't also trigger canvas panning
@@ -670,13 +694,40 @@ function attachDrag(bar, t, extLabel) {
     bar.style.left = left + "px";
     bar.style.width = width + "px";
     if (extLabel) extLabel.style.left = (left + width + 5) + "px";
+
+    // Vertical drag (whole-bar move only) = reorder priority within the lane.
+    if (mode === "move" && lane) {
+      const deltaY = e.clientY - startY;
+      deltaRows = Math.max(-(t.subRow), Math.min(lane.subRowCount - 1 - t.subRow, Math.round(deltaY / ROW_H)));
+      const newTop = origTop + deltaRows * ROW_H;
+      bar.style.top = newTop + "px";
+      if (extLabel) extLabel.style.top = newTop + "px";
+    }
   });
 
   document.addEventListener("mouseup", async () => {
     if (!mode) return;
     bar.classList.remove("dragging");
+    bar.style.zIndex = "";
+    const wasMove = mode === "move";
     const changed = t.start.getTime() !== origStart.getTime() || t.end.getTime() !== origEnd.getTime();
     mode = null;
+
+    if (wasMove && lane && deltaRows !== 0) {
+      const srcPos = lane.idxs.indexOf(idx);
+      const destPos = Math.max(0, Math.min(lane.idxs.length - 1, srcPos + deltaRows));
+      if (destPos !== srcPos) {
+        lane.idxs.splice(srcPos, 1);
+        lane.idxs.splice(destPos, 0, idx);
+        lane.idxs.forEach((ix, r) => { tasks[ix].subRow = r; });
+        manualOrder[lane.name] = lane.idxs.map(ix => tasks[ix].rowNum);
+        localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
+      }
+      render();
+      if (changed) await saveDates(t, bar);
+      return;
+    }
+
     if (!changed) return;
     await saveDates(t, bar);
   });
