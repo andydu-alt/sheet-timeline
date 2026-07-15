@@ -205,12 +205,15 @@ async function loadData() {
     const data = await sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS`);
     const rows = data.values || [];
     const C = CONFIG.COL;
+    const MIN_SANE_YEAR = 2015; // dates before this are blank/formula cells rendered as the Sheets epoch (1899/1900)
     tasks = [];
+    let skippedSentinel = 0;
     rows.forEach((row, i) => {
       const assignee = (row[C.ASSIGNEE] || "").trim();
       const start = parseDate(row[C.START]);
       const end = parseDate(row[C.END]);
       if (!assignee || !start || !end) return; // skip blank/header/incomplete rows
+      if (start.getFullYear() < MIN_SANE_YEAR || end.getFullYear() < MIN_SANE_YEAR) { skippedSentinel++; return; }
       tasks.push({
         rowNum: i + 2, // actual sheet row (1-based, +1 for header)
         assignee,
@@ -227,7 +230,7 @@ async function loadData() {
     });
     buildLanes();
     render();
-    setStatus(`Loaded ${tasks.length} tasks · ${new Date().toLocaleTimeString()}`);
+    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
     setStatus("Load failed: " + err.message, true);
