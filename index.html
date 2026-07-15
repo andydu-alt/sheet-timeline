@@ -139,7 +139,14 @@
   body.mobile-mode .bar{height:30px;}
   body.mobile-mode .bar .handle{width:16px;} /* 8px is too small to grab reliably with a finger */
   body.mobile-mode .lane-label{font-size:11px;}
-  body.mobile-mode #assignee-panel, body.mobile-mode #activity-panel{width:calc(100vw - 16px);max-width:360px;max-height:70vh;z-index:220;} /* above the drawer (210) so filter dropdowns aren't hidden behind it */
+  /* Mobile: accordion, not a floating popover — expands in-place right
+     below its button inside the drawer's own scroll flow. This sidesteps
+     every position:fixed/transform/stacking-context edge case the
+     floating version kept hitting on a touch device. */
+  body.mobile-mode #assignee-panel, body.mobile-mode #activity-panel{
+    position:static !important;width:100%;max-width:none;max-height:none;
+    box-shadow:none;border:1px solid var(--border);margin-top:6px;
+  }
   body.mobile-mode #task-modal{width:94vw;padding:16px;}
 </style>
 </head>
@@ -792,7 +799,10 @@ function buildAssigneePanel() {
 }
 
 document.getElementById("btn-assignee").addEventListener("click", (e) => {
-  positionFilterPanel(document.getElementById("assignee-panel"), e.currentTarget);
+  // Mobile: inline accordion, no floating popover to position.
+  if (!document.body.classList.contains("mobile-mode")) {
+    positionFilterPanel(document.getElementById("assignee-panel"), e.currentTarget);
+  }
   document.getElementById("assignee-panel").classList.toggle("open");
 });
 
@@ -859,7 +869,10 @@ function buildActivityPanel() {
 }
 
 document.getElementById("btn-activity").addEventListener("click", (e) => {
-  positionFilterPanel(document.getElementById("activity-panel"), e.currentTarget);
+  // Mobile: inline accordion, no floating popover to position.
+  if (!document.body.classList.contains("mobile-mode")) {
+    positionFilterPanel(document.getElementById("activity-panel"), e.currentTarget);
+  }
   document.getElementById("activity-panel").classList.toggle("open");
 });
 document.addEventListener("click", (e) => {
@@ -1665,17 +1678,6 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
   render();
   closeTaskModal();
 });
-
-// Reparent the filter dropdown panels to <body>, out from under the
-// settings drawer. The drawer needs a CSS `transform` for its slide
-// animation, and per spec that makes it the containing block for any
-// position:fixed descendant — trapping and clipping these panels inside
-// the drawer's own scroll box instead of floating over the whole screen.
-// Their position is computed purely from the trigger button's on-screen
-// rect (positionFilterPanel), so moving them in the DOM changes nothing
-// about how they're placed.
-document.body.appendChild(document.getElementById("assignee-panel"));
-document.body.appendChild(document.getElementById("activity-panel"));
 
 /* ============================================================
    Boot
