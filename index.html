@@ -114,6 +114,7 @@
   <button id="btn-redo" class="icon-btn" style="display:none;" disabled title="Redo"><span>↷</span><i id="redo-count"></i></button>
   <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
   <button id="btn-apply-frd-spec" style="display:none;">Apply FRD/Spec Formulas</button>
+  <button id="btn-align-waterfall" style="display:none;">Align Waterfall</button>
   <div id="assignee-filter" style="display:none;">
     <button id="btn-assignee">Assignees ▾</button>
     <div id="assignee-panel">
@@ -456,6 +457,7 @@ function onSignedIn() {
   document.getElementById("zoom").style.display = "inline-block";
   document.getElementById("btn-legend-toggle").style.display = "inline-block";
   document.getElementById("btn-apply-frd-spec").style.display = "inline-block";
+  document.getElementById("btn-align-waterfall").style.display = "inline-block";
   document.getElementById("legend").classList.add("shown");
 
   // Restore saved zoom + legend visibility before the first render.
@@ -1395,6 +1397,24 @@ async function applyFrdSpecFormulas() {
 }
 
 document.getElementById("btn-apply-frd-spec").addEventListener("click", applyFrdSpecFormulas);
+
+// Resets every lane's row order back to chronological (Start date) order —
+// clears the manual drag-order override that had drifted out of sync with
+// the actual dates/formulas and was causing the scattered layout.
+document.getElementById("btn-align-waterfall").addEventListener("click", () => {
+  const laneCount = Object.keys(manualOrder).length;
+  if (!laneCount) { setStatus("Already in chronological order — nothing to reset."); return; }
+  const ok = window.confirm(
+    `This clears the manual row-priority order for ${laneCount} lane(s) and resets every lane to chronological (Start date) order.\n\nThis does not change any dates — only which row each task displays on. Continue?`
+  );
+  if (!ok) return;
+  commitUndoPoint(snapshotState());
+  manualOrder = {};
+  localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
+  buildLanes();
+  render();
+  setStatus(`Row order reset to chronological · ${new Date().toLocaleTimeString()}`);
+});
 
 /* ============================================================
    Task detail / recalculate modal — click a bar (without dragging) to
