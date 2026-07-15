@@ -8,47 +8,53 @@
 <style>
   :root{
     --bg:#f4f5f7; --panel:#ffffff; --border:#e1e4e8; --text:#1f2328; --muted:#6b7280;
-    --accent:#2563eb; --accent-soft:#dbeafe; --today:#ef4444;
+    --accent:#2563eb; --today:#ef4444;
   }
   *{box-sizing:border-box;}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
-  #toolbar{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;position:sticky;top:0;z-index:50;}
+  #toolbar{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;position:relative;z-index:60;}
   #toolbar h1{font-size:15px;font-weight:600;margin:0 12px 0 0;white-space:nowrap;}
   button, select{font:inherit;font-size:13px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:#fff;cursor:pointer;color:var(--text);}
   button:hover{background:#f0f2f5;}
-  button.primary{background:var(--accent);color:#fff;border-color:var(--accent);}
-  button.primary:hover{background:#1d4ed8;}
   #status{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap;}
   #status.saving{color:#b45309;}
   #status.error{color:#dc2626;}
-  #legend{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);}
-  .dot{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:4px;}
+
+  #legend{display:flex;gap:10px;align-items:center;font-size:11.5px;color:var(--muted);padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  .dot{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:4px;flex-shrink:0;}
 
   #signin-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:70vh;gap:14px;text-align:center;padding:20px;}
   #signin-screen p{color:var(--muted);font-size:14px;max-width:420px;}
 
-  /* Two independently-scrolling columns sharing one vertical scrollbar:
-     #timeline-wrap scrolls vertically; #right-col scrolls horizontally.
-     #left-col never moves horizontally, so lane labels stay frozen. */
-  #timeline-wrap{display:none;overflow-y:auto;overflow-x:hidden;height:calc(100vh - 53px);}
-  #scroll-inner{display:flex;align-items:flex-start;}
+  /* --- Assignee filter dropdown --- */
+  #assignee-filter{position:relative;}
+  #assignee-panel{display:none;position:absolute;top:36px;left:0;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);width:240px;max-height:360px;overflow-y:auto;z-index:70;padding:8px;}
+  #assignee-panel.open{display:block;}
+  #assignee-panel input[type=text]{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:6px;}
+  .assignee-actions{display:flex;gap:6px;margin-bottom:6px;}
+  .assignee-actions button{flex:1;padding:4px;font-size:11.5px;}
+  .assignee-row{display:flex;align-items:center;gap:6px;padding:4px 4px;font-size:12.5px;border-radius:4px;}
+  .assignee-row:hover{background:#f0f2f5;}
+  .assignee-row label{flex:1;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
-  #left-col{position:sticky;left:0;z-index:25;width:170px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);}
-  .corner{position:sticky;top:0;z-index:30;width:170px;height:56px;background:var(--panel);border-bottom:1px solid var(--border);}
-  .lane-label{width:170px;padding:8px 10px;font-size:12px;font-weight:600;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;}
-  .lane-label small{display:block;font-weight:400;color:var(--muted);font-size:10.5px;margin-top:2px;}
-
-  #right-col{overflow-x:auto;flex:1;min-width:0;}
+  /* --- Single scrollable canvas: both axes on #timeline-wrap so the
+     horizontal scrollbar is always visible within the viewport. --- */
+  #timeline-wrap{display:none;overflow:auto;height:calc(100vh - 90px);position:relative;}
   #grid{position:relative;}
 
   #month-header{position:sticky;top:0;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:34px;}
   #day-header{position:sticky;top:34px;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:22px;}
+  .corner{position:sticky;left:0;z-index:30;width:170px;height:34px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);}
+  .corner.corner-day{height:22px;}
   .month-cell{position:absolute;top:0;height:34px;border-right:1px solid var(--border);font-size:12px;font-weight:600;padding:8px 0 0 6px;color:var(--text);white-space:nowrap;overflow:hidden;}
   .day-cell{position:absolute;top:0;height:22px;border-right:1px solid #eee;font-size:10px;color:var(--muted);text-align:center;line-height:22px;}
   .day-cell.weekend{background:#f7f7f8;}
 
   #body-row{position:relative;}
   .lane-bg{position:absolute;left:0;right:0;border-bottom:1px solid var(--border);}
+  .lane-label-wrap{position:absolute;left:0;width:100%;}
+  .lane-label{position:sticky;left:0;width:170px;padding:8px 10px;font-size:12px;font-weight:600;background:var(--panel);border-right:1px solid var(--border);height:100%;display:flex;align-items:center;}
+  .lane-label small{display:block;font-weight:400;color:var(--muted);font-size:10.5px;margin-top:2px;}
 
   .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);z-index:5;}
 
@@ -58,10 +64,6 @@
   .bar .handle{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;}
   .bar .handle.left{left:0;}
   .bar .handle.right{right:0;}
-  .bar.status-done{background:#16a34a;}
-  .bar.status-inprogress{background:#2563eb;}
-  .bar.status-notstart{background:#6b7280;}
-  .bar.status-other{background:#7c3aed;}
 
   #tooltip{position:fixed;background:#111827;color:#fff;font-size:12px;padding:8px 10px;border-radius:6px;pointer-events:none;z-index:100;max-width:320px;line-height:1.5;display:none;box-shadow:0 4px 12px rgba(0,0,0,.3);}
 </style>
@@ -73,33 +75,34 @@
   <button id="btn-signin">Sign in with Google</button>
   <button id="btn-reload" style="display:none;">Reload from Sheet</button>
   <button id="btn-today" style="display:none;">Today</button>
+  <div id="assignee-filter" style="display:none;">
+    <button id="btn-assignee">Assignees ▾</button>
+    <div id="assignee-panel">
+      <input type="text" id="assignee-search" placeholder="Search assignee…">
+      <div class="assignee-actions">
+        <button id="assignee-all">All</button>
+        <button id="assignee-none">None</button>
+      </div>
+      <div id="assignee-list"></div>
+    </div>
+  </div>
   <select id="zoom" style="display:none;">
+    <option value="4">Zoom: Quarter</option>
     <option value="10">Zoom: Month</option>
     <option value="24" selected>Zoom: Week</option>
     <option value="42">Zoom: Day</option>
   </select>
-  <div id="legend" style="display:none;">
-    <span><span class="dot" style="background:#6b7280;"></span>Not Started</span>
-    <span><span class="dot" style="background:#2563eb;"></span>In Progress</span>
-    <span><span class="dot" style="background:#16a34a;"></span>Done</span>
-  </div>
   <span id="status"></span>
 </div>
+
+<div id="legend" style="display:none;"></div>
 
 <div id="signin-screen">
   <p>Sign in with your Google account to load the <b>Core General Raw Data</b> sheet as a drag-and-drop timeline. Dragging a bar updates the Start/End date cells directly in the sheet.</p>
 </div>
 
 <div id="timeline-wrap">
-  <div id="scroll-inner">
-    <div id="left-col">
-      <div class="corner"></div>
-      <div id="lane-labels-col"></div>
-    </div>
-    <div id="right-col">
-      <div id="grid"></div>
-    </div>
-  </div>
+  <div id="grid"></div>
 </div>
 
 <div id="tooltip"></div>
@@ -115,22 +118,33 @@ const CONFIG = {
   // Columns (0-indexed) within the fetched range A:L
   COL: { ASSIGNEE:0, DEPT:1, JIRA:2, FEATURE:3, TASKS:4, ACTIVITY:5, START:6, END:7, EST:8, FORECAST:9, STATUS:10, NAMEINPLAN:11 },
   SCOPES: "https://www.googleapis.com/auth/spreadsheets",
+  TOKEN_STORAGE_KEY: "sheet_timeline_token_v1",
 };
+
+const LABEL_W = 170;
+const ACTIVITY_PALETTE = ["#2563eb","#16a34a","#dc2626","#d97706","#7c3aed","#0891b2","#db2777","#65a30d","#ea580c","#4f46e5","#0d9488","#be123c","#9333ea","#059669","#0284c7","#a16207"];
 
 /* ============================================================
    State
    ============================================================ */
 let accessToken = null;
 let tokenClient = null;
+let tokenExpiryMs = 0;
 let tasks = [];        // parsed task rows
 let lanes = [];         // { name, idxs: [taskIndices...], subRowCount }
 let minDate, maxDate;
 let pxPerDay = 24;
 const ROW_H = 34;
 const DAY_MS = 86400000;
+let activityColors = new Map();
+let selectedAssignees = null; // null = all selected; else Set of names
 
 /* ============================================================
-   Auth
+   Auth — cache the access token in localStorage and try a silent
+   (no-popup) re-auth on load / before it expires, so signing in
+   once is enough for most days as long as the browser keeps its
+   Google session alive. A pure client-side page cannot get a
+   refresh token, so this is "silent re-auth", not a real session.
    ============================================================ */
 function initAuth() {
   tokenClient = google.accounts.oauth2.initTokenClient({
@@ -139,14 +153,40 @@ function initAuth() {
     callback: (resp) => {
       if (resp.error) { setStatus("Sign-in failed: " + resp.error, true); return; }
       accessToken = resp.access_token;
+      tokenExpiryMs = Date.now() + (parseInt(resp.expires_in || "3600", 10) * 1000);
+      localStorage.setItem(CONFIG.TOKEN_STORAGE_KEY, JSON.stringify({ token: accessToken, expiry: tokenExpiryMs }));
+      scheduleSilentRefresh();
       onSignedIn();
     },
   });
+
+  // Try to reuse a cached token first.
+  try {
+    const cached = JSON.parse(localStorage.getItem(CONFIG.TOKEN_STORAGE_KEY) || "null");
+    if (cached && cached.token && cached.expiry > Date.now() + 60000) {
+      accessToken = cached.token;
+      tokenExpiryMs = cached.expiry;
+      scheduleSilentRefresh();
+      onSignedIn();
+      return;
+    }
+  } catch (e) { /* ignore malformed cache */ }
+
+  // No valid cached token — try one silent attempt (works if the browser
+  // still has an active Google session and consent was already granted).
+  tokenClient.requestAccessToken({ prompt: "" });
+}
+
+function scheduleSilentRefresh() {
+  const msUntilRefresh = Math.max(30000, tokenExpiryMs - Date.now() - 120000);
+  setTimeout(() => {
+    if (tokenClient) tokenClient.requestAccessToken({ prompt: "" });
+  }, msUntilRefresh);
 }
 
 document.getElementById("btn-signin").addEventListener("click", () => {
   if (!tokenClient) { setStatus("Google auth not loaded yet — retry in a second.", true); return; }
-  tokenClient.requestAccessToken({ prompt: accessToken ? "" : "consent" });
+  tokenClient.requestAccessToken({ prompt: "consent" });
 });
 
 document.getElementById("btn-reload").addEventListener("click", loadData);
@@ -155,10 +195,10 @@ document.getElementById("btn-today").addEventListener("click", jumpToToday);
 
 function jumpToToday() {
   if (!minDate) return;
-  const rightCol = document.getElementById("right-col");
+  const wrap = document.getElementById("timeline-wrap");
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const todayX = dayOffset(today) * pxPerDay;
-  rightCol.scrollTo({ left: Math.max(0, todayX - rightCol.clientWidth / 2), behavior: "smooth" });
+  const todayX = LABEL_W + dayOffset(today) * pxPerDay;
+  wrap.scrollTo({ left: Math.max(0, todayX - wrap.clientWidth / 2), behavior: "smooth" });
 }
 
 document.getElementById("zoom").addEventListener("change", (e) => {
@@ -172,6 +212,7 @@ function onSignedIn() {
   document.getElementById("btn-signin").textContent = "Re-authenticate";
   document.getElementById("btn-reload").style.display = "inline-block";
   document.getElementById("btn-today").style.display = "inline-block";
+  document.getElementById("assignee-filter").style.display = "inline-block";
   document.getElementById("zoom").style.display = "inline-block";
   document.getElementById("legend").style.display = "flex";
   loadData();
@@ -212,13 +253,12 @@ function fmtDate(d) {
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
 }
 
-function statusClass(status) {
-  if (!status) return "status-other";
-  const s = status.toLowerCase();
-  if (s.includes("done")) return "status-done";
-  if (s.includes("progress")) return "status-inprogress";
-  if (s.includes("not start")) return "status-notstart";
-  return "status-other";
+function colorForActivity(activity) {
+  const key = (activity || "Uncategorized").trim() || "Uncategorized";
+  if (!activityColors.has(key)) {
+    activityColors.set(key, ACTIVITY_PALETTE[activityColors.size % ACTIVITY_PALETTE.length]);
+  }
+  return activityColors.get(key);
 }
 
 async function loadData() {
@@ -230,6 +270,7 @@ async function loadData() {
     const C = CONFIG.COL;
     const MIN_SANE_YEAR = 2015; // dates before this are blank/formula cells rendered as the Sheets epoch (1899/1900)
     tasks = [];
+    activityColors = new Map();
     let skippedSentinel = 0;
     rows.forEach((row, i) => {
       const assignee = (row[C.ASSIGNEE] || "").trim();
@@ -237,6 +278,7 @@ async function loadData() {
       const end = parseDate(row[C.END]);
       if (!assignee || !start || !end) return; // skip blank/header/incomplete rows
       if (start.getFullYear() < MIN_SANE_YEAR || end.getFullYear() < MIN_SANE_YEAR) { skippedSentinel++; return; }
+      const activity = (row[C.ACTIVITY] || "").trim();
       tasks.push({
         rowNum: i + 2, // actual sheet row (1-based, +1 for header)
         assignee,
@@ -244,13 +286,26 @@ async function loadData() {
         jira: row[C.JIRA] || "",
         feature: row[C.FEATURE] || "",
         taskName: row[C.TASKS] || "",
-        activity: row[C.ACTIVITY] || "",
+        activity,
         start, end,
         est: row[C.EST] || "",
         status: row[C.STATUS] || "",
         label: (row[C.FEATURE] || row[C.TASKS] || row[C.ACTIVITY] || "Task"),
+        color: colorForActivity(activity),
       });
     });
+
+    if (selectedAssignees === null) {
+      selectedAssignees = new Set(tasks.map(t => t.assignee));
+    } else {
+      // keep previous selection, but add any brand-new assignees as selected
+      const allNames = new Set(tasks.map(t => t.assignee));
+      allNames.forEach(n => { if (!selectedAssignees.has(n) && !everSeenAssignees.has(n)) selectedAssignees.add(n); });
+    }
+    everSeenAssignees = new Set(tasks.map(t => t.assignee));
+
+    buildAssigneePanel();
+    buildLegend();
     buildLanes();
     render();
     setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""} · ${new Date().toLocaleTimeString()}`);
@@ -259,11 +314,77 @@ async function loadData() {
     setStatus("Load failed: " + err.message, true);
   }
 }
+let everSeenAssignees = new Set();
 
-// One row per task, in priority order (earliest Start date first) — no overlap-packing.
+/* ============================================================
+   Legend (dynamic, by Activity)
+   ============================================================ */
+function buildLegend() {
+  const legend = document.getElementById("legend");
+  legend.innerHTML = "";
+  const names = Array.from(activityColors.keys()).sort();
+  names.forEach((name) => {
+    const span = document.createElement("span");
+    span.style.display = "flex";
+    span.style.alignItems = "center";
+    span.innerHTML = `<span class="dot" style="background:${activityColors.get(name)};"></span>${escapeHtml(name)}`;
+    legend.appendChild(span);
+  });
+}
+
+/* ============================================================
+   Assignee filter panel
+   ============================================================ */
+function buildAssigneePanel() {
+  const list = document.getElementById("assignee-list");
+  list.innerHTML = "";
+  const counts = new Map();
+  tasks.forEach(t => counts.set(t.assignee, (counts.get(t.assignee) || 0) + 1));
+  const names = Array.from(counts.keys()).sort();
+  names.forEach((name) => {
+    const row = document.createElement("div");
+    row.className = "assignee-row";
+    row.dataset.name = name.toLowerCase();
+    const id = "asg_" + name.replace(/[^a-z0-9]/gi, "_");
+    row.innerHTML = `<input type="checkbox" id="${id}" ${selectedAssignees.has(name) ? "checked" : ""}>
+      <label for="${id}">${escapeHtml(name)} <span style="color:var(--muted);">(${counts.get(name)})</span></label>`;
+    row.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) selectedAssignees.add(name); else selectedAssignees.delete(name);
+      buildLanes(); render();
+    });
+    list.appendChild(row);
+  });
+}
+
+document.getElementById("btn-assignee").addEventListener("click", () => {
+  document.getElementById("assignee-panel").classList.toggle("open");
+});
+document.addEventListener("click", (e) => {
+  const filter = document.getElementById("assignee-filter");
+  if (!filter.contains(e.target)) document.getElementById("assignee-panel").classList.remove("open");
+});
+document.getElementById("assignee-search").addEventListener("input", (e) => {
+  const q = e.target.value.toLowerCase();
+  document.querySelectorAll(".assignee-row").forEach(row => {
+    row.style.display = row.dataset.name.includes(q) ? "flex" : "none";
+  });
+});
+document.getElementById("assignee-all").addEventListener("click", () => {
+  selectedAssignees = new Set(tasks.map(t => t.assignee));
+  buildAssigneePanel(); buildLanes(); render();
+});
+document.getElementById("assignee-none").addEventListener("click", () => {
+  selectedAssignees = new Set();
+  buildAssigneePanel(); buildLanes(); render();
+});
+
+/* ============================================================
+   Lanes — one row per task, in priority order (earliest Start first)
+   ============================================================ */
 function buildLanes() {
   const byAssignee = new Map();
   tasks.forEach((t, idx) => {
+    if (!selectedAssignees.has(t.assignee)) return;
     if (!byAssignee.has(t.assignee)) byAssignee.set(t.assignee, []);
     byAssignee.get(t.assignee).push(idx);
   });
@@ -274,9 +395,13 @@ function buildLanes() {
     idxs.forEach((idx, r) => { tasks[idx].subRow = r; });
     lanes.push({ name, idxs, subRowCount: idxs.length });
   }
+  lanes.sort((a, b) => a.name.localeCompare(b.name));
 
-  minDate = new Date(Math.min(...tasks.map(t => t.start.getTime())));
-  maxDate = new Date(Math.max(...tasks.map(t => t.end.getTime())));
+  if (!tasks.length) return;
+  const visibleTasks = lanes.flatMap(l => l.idxs).map(i => tasks[i]);
+  if (!visibleTasks.length) { minDate = new Date(); maxDate = new Date(); maxDate.setDate(maxDate.getDate() + 30); return; }
+  minDate = new Date(Math.min(...visibleTasks.map(t => t.start.getTime())));
+  maxDate = new Date(Math.max(...visibleTasks.map(t => t.end.getTime())));
   minDate.setDate(minDate.getDate() - 7);
   maxDate.setDate(maxDate.getDate() + 14);
 }
@@ -290,27 +415,29 @@ function dayOffset(d) {
    ============================================================ */
 function render() {
   const grid = document.getElementById("grid");
-  const laneLabelsCol = document.getElementById("lane-labels-col");
   grid.innerHTML = "";
-  laneLabelsCol.innerHTML = "";
-  if (!tasks.length) { grid.style.width = "100%"; grid.style.height = "200px"; return; }
+  if (!lanes.length) { grid.style.width = "100%"; grid.style.height = "200px"; grid.textContent = "No tasks match the current assignee filter."; return; }
 
   const totalDays = dayOffset(maxDate) + 1;
   const gridWidth = totalDays * pxPerDay;
+  const fullWidth = LABEL_W + gridWidth;
 
-  grid.style.width = gridWidth + "px";
+  grid.style.width = fullWidth + "px";
 
   // Month header
   const monthHeader = document.createElement("div");
   monthHeader.id = "month-header";
-  monthHeader.style.width = gridWidth + "px";
+  monthHeader.style.width = fullWidth + "px";
+  const monthCorner = document.createElement("div");
+  monthCorner.className = "corner";
+  monthHeader.appendChild(monthCorner);
   let cursor = new Date(minDate);
   cursor.setDate(1);
   while (cursor <= maxDate) {
     const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
     const segStart = cursor < minDate ? minDate : cursor;
     const segEnd = next < maxDate ? next : new Date(maxDate.getTime() + DAY_MS);
-    const left = dayOffset(segStart) * pxPerDay;
+    const left = LABEL_W + dayOffset(segStart) * pxPerDay;
     const width = Math.max(1, (dayOffset(segEnd) - dayOffset(segStart)) * pxPerDay);
     const cell = document.createElement("div");
     cell.className = "month-cell";
@@ -325,13 +452,16 @@ function render() {
   // Day header
   const dayHeader = document.createElement("div");
   dayHeader.id = "day-header";
-  dayHeader.style.width = gridWidth + "px";
+  dayHeader.style.width = fullWidth + "px";
+  const dayCorner = document.createElement("div");
+  dayCorner.className = "corner corner-day";
+  dayHeader.appendChild(dayCorner);
   for (let d = 0; d < totalDays; d++) {
     const date = new Date(minDate.getTime() + d * DAY_MS);
     const cell = document.createElement("div");
     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
     cell.className = "day-cell" + (isWeekend ? " weekend" : "");
-    cell.style.left = (d * pxPerDay) + "px";
+    cell.style.left = (LABEL_W + d * pxPerDay) + "px";
     cell.style.width = pxPerDay + "px";
     if (pxPerDay >= 20) cell.textContent = date.getDate();
     dayHeader.appendChild(cell);
@@ -341,11 +471,11 @@ function render() {
   // Body
   const body = document.createElement("div");
   body.id = "body-row";
-  body.style.width = gridWidth + "px";
+  body.style.width = fullWidth + "px";
 
   let y = 0;
   const today = new Date(); today.setHours(0,0,0,0);
-  const todayX = dayOffset(today) * pxPerDay;
+  const todayX = LABEL_W + dayOffset(today) * pxPerDay;
 
   lanes.forEach((lane) => {
     const laneHeight = lane.subRowCount * ROW_H;
@@ -356,18 +486,20 @@ function render() {
     bg.style.height = laneHeight + "px";
     body.appendChild(bg);
 
-    const label = document.createElement("div");
-    label.className = "lane-label";
-    label.style.height = laneHeight + "px";
-    label.innerHTML = `${escapeHtml(lane.name)}<small>${lane.idxs.length} task${lane.idxs.length !== 1 ? "s" : ""}</small>`;
-    laneLabelsCol.appendChild(label);
+    const labelWrap = document.createElement("div");
+    labelWrap.className = "lane-label-wrap";
+    labelWrap.style.top = y + "px";
+    labelWrap.style.height = laneHeight + "px";
+    labelWrap.innerHTML = `<div class="lane-label">${escapeHtml(lane.name)}<small>${lane.idxs.length} task${lane.idxs.length !== 1 ? "s" : ""}</small></div>`;
+    body.appendChild(labelWrap);
 
     lane.idxs.forEach((idx) => {
       const t = tasks[idx];
-      const left = dayOffset(t.start) * pxPerDay;
+      const left = LABEL_W + dayOffset(t.start) * pxPerDay;
       const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
       const bar = document.createElement("div");
-      bar.className = "bar " + statusClass(t.status);
+      bar.className = "bar";
+      bar.style.background = t.color;
       bar.style.left = left + "px";
       bar.style.top = (y + t.subRow * ROW_H + 4) + "px";
       bar.style.width = width + "px";
@@ -384,7 +516,7 @@ function render() {
 
   const totalHeight = y;
 
-  if (todayX >= 0) {
+  if (todayX >= LABEL_W) {
     const line = document.createElement("div");
     line.className = "today-line";
     line.style.left = todayX + "px";
@@ -460,7 +592,7 @@ function attachDrag(bar, t) {
       if (newEnd < origStart) newEnd = new Date(origStart);
     }
     t.start = newStart; t.end = newEnd;
-    const left = dayOffset(t.start) * pxPerDay;
+    const left = LABEL_W + dayOffset(t.start) * pxPerDay;
     const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
     bar.style.left = left + "px";
     bar.style.width = width + "px";
