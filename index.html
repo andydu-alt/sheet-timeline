@@ -72,6 +72,7 @@
   <h1>Core General — Timeline</h1>
   <button id="btn-signin">Sign in with Google</button>
   <button id="btn-reload" style="display:none;">Reload from Sheet</button>
+  <button id="btn-today" style="display:none;">Today</button>
   <select id="zoom" style="display:none;">
     <option value="10">Zoom: Month</option>
     <option value="24" selected>Zoom: Week</option>
@@ -150,6 +151,16 @@ document.getElementById("btn-signin").addEventListener("click", () => {
 
 document.getElementById("btn-reload").addEventListener("click", loadData);
 
+document.getElementById("btn-today").addEventListener("click", jumpToToday);
+
+function jumpToToday() {
+  if (!minDate) return;
+  const rightCol = document.getElementById("right-col");
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayX = dayOffset(today) * pxPerDay;
+  rightCol.scrollTo({ left: Math.max(0, todayX - rightCol.clientWidth / 2), behavior: "smooth" });
+}
+
 document.getElementById("zoom").addEventListener("change", (e) => {
   pxPerDay = parseInt(e.target.value, 10);
   render();
@@ -160,6 +171,7 @@ function onSignedIn() {
   document.getElementById("timeline-wrap").style.display = "block";
   document.getElementById("btn-signin").textContent = "Re-authenticate";
   document.getElementById("btn-reload").style.display = "inline-block";
+  document.getElementById("btn-today").style.display = "inline-block";
   document.getElementById("zoom").style.display = "inline-block";
   document.getElementById("legend").style.display = "flex";
   loadData();
