@@ -113,8 +113,9 @@
   #btn-drawer-toggle{display:none;}
   #drawer-backdrop{display:none;}
 
-  body.mobile-mode #toolbar{padding:8px 12px;gap:8px;}
+  body.mobile-mode #toolbar{padding:8px 12px;gap:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;}
   body.mobile-mode #btn-drawer-toggle{display:inline-flex;min-height:40px;padding:8px 14px;font-size:14px;}
+  body.mobile-mode #btn-today{min-height:40px;padding:8px 14px;font-size:14px;flex-shrink:0;}
 
   /* The settings drawer: a real vertical panel that slides in from the
      left, toggled independently of the timeline underneath it. */
@@ -155,13 +156,13 @@
      mobile, reclaiming its width for the timeline itself. */
   body.mobile-mode .corner{width:0 !important;}
   body.mobile-mode .lane-label{display:none;}
+  /* Now lives inline in the top bar next to Today, not inside the
+     scrolling timeline — no sticky positioning or header offset needed. */
   body.mobile-mode #current-assignee-banner{
-    display:flex;align-items:center;position:sticky;top:0;left:0;z-index:25;
-    height:32px;padding:0 12px;background:#111827;color:#fff;font-size:13px;font-weight:600;
-    width:100%;box-shadow:0 1px 4px rgba(0,0,0,.2);
+    display:inline-flex;align-items:center;height:32px;padding:0 10px;
+    background:#111827;color:#fff;font-size:12.5px;font-weight:600;border-radius:6px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38vw;flex-shrink:1;
   }
-  body.mobile-mode #month-header{top:32px;}
-  body.mobile-mode #day-header{top:66px;}
 
   /* Custom scroll indicators — iOS Safari doesn't render styled (or even
      default) scrollbars reliably, so without these there's no visual cue
@@ -184,10 +185,11 @@
 <div id="toolbar">
   <h1>Core General — Timeline</h1>
   <button id="btn-drawer-toggle">☰ Settings</button>
+  <button id="btn-today" style="display:none;">Today</button>
+  <div id="current-assignee-banner"></div>
   <div id="toolbar-controls">
     <button id="btn-signin">Sign in with Google</button>
     <button id="btn-reload" style="display:none;">Reload from Sheet</button>
-    <button id="btn-today" style="display:none;">Today</button>
     <button id="btn-undo" class="icon-btn" style="display:none;" disabled title="Undo"><span>↶</span><i id="undo-count"></i></button>
     <button id="btn-redo" class="icon-btn" style="display:none;" disabled title="Redo"><span>↷</span><i id="redo-count"></i></button>
     <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
@@ -234,7 +236,6 @@
 </div>
 
 <div id="timeline-wrap">
-  <div id="current-assignee-banner"></div>
   <div id="grid"></div>
 </div>
 <div id="mobile-hscroll"><div id="mobile-hscroll-thumb"></div></div>
