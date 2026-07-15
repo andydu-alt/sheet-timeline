@@ -808,7 +808,8 @@ function positionFilterPanel(panel, button) {
 }
 document.addEventListener("click", (e) => {
   const filter = document.getElementById("assignee-filter");
-  if (!filter.contains(e.target)) document.getElementById("assignee-panel").classList.remove("open");
+  const panel = document.getElementById("assignee-panel");
+  if (!filter.contains(e.target) && !panel.contains(e.target)) panel.classList.remove("open");
 });
 document.getElementById("assignee-search").addEventListener("input", (e) => {
   const q = e.target.value.toLowerCase();
@@ -863,7 +864,8 @@ document.getElementById("btn-activity").addEventListener("click", (e) => {
 });
 document.addEventListener("click", (e) => {
   const filter = document.getElementById("activity-filter");
-  if (!filter.contains(e.target)) document.getElementById("activity-panel").classList.remove("open");
+  const panel = document.getElementById("activity-panel");
+  if (!filter.contains(e.target) && !panel.contains(e.target)) panel.classList.remove("open");
 });
 document.getElementById("activity-search").addEventListener("input", (e) => {
   const q = e.target.value.toLowerCase();
@@ -1663,6 +1665,17 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
   render();
   closeTaskModal();
 });
+
+// Reparent the filter dropdown panels to <body>, out from under the
+// settings drawer. The drawer needs a CSS `transform` for its slide
+// animation, and per spec that makes it the containing block for any
+// position:fixed descendant — trapping and clipping these panels inside
+// the drawer's own scroll box instead of floating over the whole screen.
+// Their position is computed purely from the trigger button's on-screen
+// rect (positionFilterPanel), so moving them in the DOM changes nothing
+// about how they're placed.
+document.body.appendChild(document.getElementById("assignee-panel"));
+document.body.appendChild(document.getElementById("activity-panel"));
 
 /* ============================================================
    Boot
