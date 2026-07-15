@@ -89,6 +89,8 @@
   <button id="btn-signin">Sign in with Google</button>
   <button id="btn-reload" style="display:none;">Reload from Sheet</button>
   <button id="btn-today" style="display:none;">Today</button>
+  <button id="btn-undo" style="display:none;" disabled>Undo</button>
+  <button id="btn-redo" style="display:none;" disabled>Redo</button>
   <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
   <div id="assignee-filter" style="display:none;">
     <button id="btn-assignee">Assignees ▾</button>
@@ -199,6 +201,87 @@ let manualOrder = {}; // assignee name -> [rowNum, ...] priority order, drag-to-
 try { manualOrder = JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || "{}"); } catch (e) { manualOrder = {}; }
 
 /* ============================================================
+   Undo / redo (10 steps) — covers drag date changes, resizes,
+   row-reorders, and dependency-chain shifts. Restores in-memory
+   state AND re-saves any changed dates back to the sheet.
+   ============================================================ */
+const MAX_HISTORY = 10;
+let undoStack = [];
+let redoStack = [];
+
+function snapshotState() {
+  return {
+    dates: tasks.map(t => ({ rowNum: t.rowNum, start: t.start.getTime(), end: t.end.getTime() })),
+    manualOrder: JSON.parse(JSON.stringify(manualOrder)),
+  };
+}
+
+function commitUndoPoint(preSnapshot) {
+  undoStack.push(preSnapshot);
+  if (undoStack.length > MAX_HISTORY) undoStack.shift();
+  redoStack = [];
+  updateUndoRedoButtons();
+}
+
+async function applySnapshot(snapshot) {
+  const byRow = new Map(snapshot.dates.map(d => [d.rowNum, d]));
+  const changedRows = [];
+  tasks.forEach((t) => {
+    const d = byRow.get(t.rowNum);
+    if (!d) return;
+    if (t.start.getTime() !== d.start || t.end.getTime() !== d.end) {
+      t.start = new Date(d.start);
+      t.end = new Date(d.end);
+      changedRows.push(t);
+    }
+  });
+  manualOrder = snapshot.manualOrder;
+  localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
+  buildLanes();
+  render();
+  for (const t of changedRows) await saveDates(t, null);
+}
+
+async function undo() {
+  if (!undoStack.length) return;
+  const current = snapshotState();
+  const prev = undoStack.pop();
+  redoStack.push(current);
+  if (redoStack.length > MAX_HISTORY) redoStack.shift();
+  updateUndoRedoButtons();
+  await applySnapshot(prev);
+}
+
+async function redo() {
+  if (!redoStack.length) return;
+  const current = snapshotState();
+  const next = redoStack.pop();
+  undoStack.push(current);
+  if (undoStack.length > MAX_HISTORY) undoStack.shift();
+  updateUndoRedoButtons();
+  await applySnapshot(next);
+}
+
+function updateUndoRedoButtons() {
+  const undoBtn = document.getElementById("btn-undo");
+  const redoBtn = document.getElementById("btn-redo");
+  if (!undoBtn) return;
+  undoBtn.disabled = undoStack.length === 0;
+  undoBtn.textContent = `Undo${undoStack.length ? ` (${undoStack.length})` : ""}`;
+  redoBtn.disabled = redoStack.length === 0;
+  redoBtn.textContent = `Redo${redoStack.length ? ` (${redoStack.length})` : ""}`;
+}
+
+document.getElementById("btn-undo").addEventListener("click", undo);
+document.getElementById("btn-redo").addEventListener("click", redo);
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const key = e.key.toLowerCase();
+  if (key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if (key === "y" || (key === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+});
+
+/* ============================================================
    UI state (zoom, legend visibility, assignee selection) —
    persisted across reloads so the view doesn't reset every time.
    ============================================================ */
@@ -288,6 +371,8 @@ function onSignedIn() {
   document.getElementById("btn-signin").textContent = "Re-authenticate";
   document.getElementById("btn-reload").style.display = "inline-block";
   document.getElementById("btn-today").style.display = "inline-block";
+  document.getElementById("btn-undo").style.display = "inline-block";
+  document.getElementById("btn-redo").style.display = "inline-block";
   document.getElementById("assignee-filter").style.display = "inline-block";
   document.getElementById("activity-filter").style.display = "inline-block";
   document.getElementById("zoom").style.display = "inline-block";
@@ -790,6 +875,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   let startX = 0, startY = 0;
   let origStart, origEnd;
   let deltaRows = 0;
+  let preDragSnapshot = null;
 
   const onMouseDown = (e) => {
     if (e.target.classList.contains("handle")) {
@@ -802,6 +888,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     origStart = new Date(t.start);
     origEnd = new Date(t.end);
     deltaRows = 0;
+    preDragSnapshot = snapshotState();
     bar.classList.add("dragging");
     if (mode === "move") bar.style.zIndex = 40;
     document.getElementById("tooltip").style.display = "none";
@@ -897,6 +984,11 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
           });
         }
       }
+    }
+
+    const reordered = wasMove && lane && deltaRows !== 0;
+    if (changed || reordered || chainShifted.length) {
+      commitUndoPoint(preDragSnapshot);
     }
 
     render();
