@@ -9,7 +9,6 @@
   :root{
     --bg:#f4f5f7; --panel:#ffffff; --border:#e1e4e8; --text:#1f2328; --muted:#6b7280;
     --accent:#2563eb; --accent-soft:#dbeafe; --today:#ef4444;
-    --lane-a:#ffffff; --lane-b:#fafbfc;
   }
   *{box-sizing:border-box;}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
@@ -28,7 +27,18 @@
   #signin-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:70vh;gap:14px;text-align:center;padding:20px;}
   #signin-screen p{color:var(--muted);font-size:14px;max-width:420px;}
 
-  #timeline-wrap{display:none;position:relative;overflow:auto;height:calc(100vh - 53px);}
+  /* Two independently-scrolling columns sharing one vertical scrollbar:
+     #timeline-wrap scrolls vertically; #right-col scrolls horizontally.
+     #left-col never moves horizontally, so lane labels stay frozen. */
+  #timeline-wrap{display:none;overflow-y:auto;overflow-x:hidden;height:calc(100vh - 53px);}
+  #scroll-inner{display:flex;align-items:flex-start;}
+
+  #left-col{position:sticky;left:0;z-index:25;width:170px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);}
+  .corner{position:sticky;top:0;z-index:30;width:170px;height:56px;background:var(--panel);border-bottom:1px solid var(--border);}
+  .lane-label{width:170px;padding:8px 10px;font-size:12px;font-weight:600;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;}
+  .lane-label small{display:block;font-weight:400;color:var(--muted);font-size:10.5px;margin-top:2px;}
+
+  #right-col{overflow-x:auto;flex:1;min-width:0;}
   #grid{position:relative;}
 
   #month-header{position:sticky;top:0;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:34px;}
@@ -37,14 +47,8 @@
   .day-cell{position:absolute;top:0;height:22px;border-right:1px solid #eee;font-size:10px;color:var(--muted);text-align:center;line-height:22px;}
   .day-cell.weekend{background:#f7f7f8;}
 
-  #lane-labels{position:sticky;left:0;z-index:15;width:170px;background:var(--panel);border-right:1px solid var(--border);}
-  .corner{position:sticky;left:0;top:0;z-index:30;width:170px;background:var(--panel);border-right:1px solid var(--border);border-bottom:1px solid var(--border);height:56px;}
-
-  #body-row{display:flex;}
-  .lane-label{position:absolute;left:0;width:170px;padding:8px 10px;font-size:12px;font-weight:600;border-bottom:1px solid var(--border);border-right:1px solid var(--border);background:var(--panel);display:flex;align-items:center;}
-  .lane-label small{display:block;font-weight:400;color:var(--muted);font-size:10.5px;margin-top:2px;}
-
-  .lane-bg{position:absolute;left:170px;right:0;border-bottom:1px solid var(--border);}
+  #body-row{position:relative;}
+  .lane-bg{position:absolute;left:0;right:0;border-bottom:1px solid var(--border);}
 
   .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);z-index:5;}
 
@@ -86,8 +90,15 @@
 </div>
 
 <div id="timeline-wrap">
-  <div class="corner"></div>
-  <div id="grid"></div>
+  <div id="scroll-inner">
+    <div id="left-col">
+      <div class="corner"></div>
+      <div id="lane-labels-col"></div>
+    </div>
+    <div id="right-col">
+      <div id="grid"></div>
+    </div>
+  </div>
 </div>
 
 <div id="tooltip"></div>
@@ -111,7 +122,7 @@ const CONFIG = {
 let accessToken = null;
 let tokenClient = null;
 let tasks = [];        // parsed task rows
-let lanes = [];         // { name, rows: [taskIndices...], subRowCount }
+let lanes = [];         // { name, idxs: [taskIndices...], subRowCount }
 let minDate, maxDate;
 let pxPerDay = 24;
 const ROW_H = 34;
@@ -237,6 +248,7 @@ async function loadData() {
   }
 }
 
+// One row per task, in priority order (earliest Start date first) — no overlap-packing.
 function buildLanes() {
   const byAssignee = new Map();
   tasks.forEach((t, idx) => {
@@ -247,16 +259,8 @@ function buildLanes() {
   lanes = [];
   for (const [name, idxs] of byAssignee.entries()) {
     idxs.sort((a, b) => tasks[a].start - tasks[b].start);
-    const subRowEnds = []; // end date currently occupying each sub-row
-    idxs.forEach((idx) => {
-      const t = tasks[idx];
-      let placed = false;
-      for (let r = 0; r < subRowEnds.length; r++) {
-        if (t.start > subRowEnds[r]) { t.subRow = r; subRowEnds[r] = t.end; placed = true; break; }
-      }
-      if (!placed) { t.subRow = subRowEnds.length; subRowEnds.push(t.end); }
-    });
-    lanes.push({ name, idxs, subRowCount: Math.max(1, subRowEnds.length) });
+    idxs.forEach((idx, r) => { tasks[idx].subRow = r; });
+    lanes.push({ name, idxs, subRowCount: idxs.length });
   }
 
   minDate = new Date(Math.min(...tasks.map(t => t.start.getTime())));
@@ -274,30 +278,27 @@ function dayOffset(d) {
    ============================================================ */
 function render() {
   const grid = document.getElementById("grid");
+  const laneLabelsCol = document.getElementById("lane-labels-col");
   grid.innerHTML = "";
+  laneLabelsCol.innerHTML = "";
   if (!tasks.length) { grid.style.width = "100%"; grid.style.height = "200px"; return; }
 
   const totalDays = dayOffset(maxDate) + 1;
   const gridWidth = totalDays * pxPerDay;
-  let totalHeight = 56; // header height offset baseline (not used directly, lanes positioned from 0 within body)
 
-  grid.style.width = (170 + gridWidth) + "px";
+  grid.style.width = gridWidth + "px";
 
   // Month header
   const monthHeader = document.createElement("div");
   monthHeader.id = "month-header";
-  monthHeader.style.width = (170 + gridWidth) + "px";
-  const monthLabel = document.createElement("div");
-  monthLabel.className = "corner";
-  monthLabel.style.position = "sticky";
-  monthHeader.appendChild(monthLabel);
+  monthHeader.style.width = gridWidth + "px";
   let cursor = new Date(minDate);
   cursor.setDate(1);
   while (cursor <= maxDate) {
     const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
     const segStart = cursor < minDate ? minDate : cursor;
     const segEnd = next < maxDate ? next : new Date(maxDate.getTime() + DAY_MS);
-    const left = 170 + dayOffset(segStart) * pxPerDay;
+    const left = dayOffset(segStart) * pxPerDay;
     const width = Math.max(1, (dayOffset(segEnd) - dayOffset(segStart)) * pxPerDay);
     const cell = document.createElement("div");
     cell.className = "month-cell";
@@ -312,13 +313,13 @@ function render() {
   // Day header
   const dayHeader = document.createElement("div");
   dayHeader.id = "day-header";
-  dayHeader.style.width = (170 + gridWidth) + "px";
+  dayHeader.style.width = gridWidth + "px";
   for (let d = 0; d < totalDays; d++) {
     const date = new Date(minDate.getTime() + d * DAY_MS);
     const cell = document.createElement("div");
     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
     cell.className = "day-cell" + (isWeekend ? " weekend" : "");
-    cell.style.left = (170 + d * pxPerDay) + "px";
+    cell.style.left = (d * pxPerDay) + "px";
     cell.style.width = pxPerDay + "px";
     if (pxPerDay >= 20) cell.textContent = date.getDate();
     dayHeader.appendChild(cell);
@@ -328,12 +329,11 @@ function render() {
   // Body
   const body = document.createElement("div");
   body.id = "body-row";
-  body.style.position = "relative";
-  body.style.width = (170 + gridWidth) + "px";
+  body.style.width = gridWidth + "px";
 
   let y = 0;
   const today = new Date(); today.setHours(0,0,0,0);
-  const todayX = 170 + dayOffset(today) * pxPerDay;
+  const todayX = dayOffset(today) * pxPerDay;
 
   lanes.forEach((lane) => {
     const laneHeight = lane.subRowCount * ROW_H;
@@ -346,14 +346,13 @@ function render() {
 
     const label = document.createElement("div");
     label.className = "lane-label";
-    label.style.top = y + "px";
     label.style.height = laneHeight + "px";
-    label.innerHTML = `${lane.name}<small>${lane.idxs.length} task${lane.idxs.length !== 1 ? "s" : ""}</small>`;
-    body.appendChild(label);
+    label.innerHTML = `${escapeHtml(lane.name)}<small>${lane.idxs.length} task${lane.idxs.length !== 1 ? "s" : ""}</small>`;
+    laneLabelsCol.appendChild(label);
 
     lane.idxs.forEach((idx) => {
       const t = tasks[idx];
-      const left = 170 + dayOffset(t.start) * pxPerDay;
+      const left = dayOffset(t.start) * pxPerDay;
       const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
       const bar = document.createElement("div");
       bar.className = "bar " + statusClass(t.status);
@@ -371,9 +370,9 @@ function render() {
     y += laneHeight;
   });
 
-  totalHeight = y;
+  const totalHeight = y;
 
-  if (todayX >= 170) {
+  if (todayX >= 0) {
     const line = document.createElement("div");
     line.className = "today-line";
     line.style.left = todayX + "px";
@@ -449,7 +448,7 @@ function attachDrag(bar, t) {
       if (newEnd < origStart) newEnd = new Date(origStart);
     }
     t.start = newStart; t.end = newEnd;
-    const left = 170 + dayOffset(t.start) * pxPerDay;
+    const left = dayOffset(t.start) * pxPerDay;
     const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
     bar.style.left = left + "px";
     bar.style.width = width + "px";
