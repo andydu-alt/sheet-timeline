@@ -180,6 +180,32 @@ function snapForwardToWorkingDay(d) {
   return r;
 }
 
+// Inclusive count of working days between two dates (e.g. Fri->Mon = 2).
+function countWorkingDays(start, end) {
+  let count = 0;
+  const d = new Date(start);
+  while (d <= end) {
+    if (isWorkingDay(d)) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+}
+
+// The date reached after `workDayCount` working days starting at `start`
+// (start itself counts as day 1) — used to preserve a task's working-day
+// duration when it's dragged across a weekend/holiday, e.g. a 2-workday
+// task that spans Fri-Mon (4 calendar days) stays 2 workdays wherever it
+// lands, even if the new position also straddles a weekend.
+function addWorkingDaysInclusive(start, workDayCount) {
+  const d = new Date(start);
+  let count = isWorkingDay(d) ? 1 : 0;
+  while (count < workDayCount) {
+    d.setDate(d.getDate() + 1);
+    if (isWorkingDay(d)) count++;
+  }
+  return d;
+}
+
 async function loadHolidays() {
   try {
     const data = await sheetsFetch(`/values/${encodeURIComponent("Holidays!B1:B300")}?majorDimension=ROWS`);
@@ -873,7 +899,7 @@ function attachTooltip(bar, t) {
 function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   let mode = null; // 'move' | 'left' | 'right'
   let startX = 0, startY = 0;
-  let origStart, origEnd;
+  let origStart, origEnd, origWorkDays;
   let deltaRows = 0;
   let preDragSnapshot = null;
 
@@ -887,6 +913,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     startY = e.clientY;
     origStart = new Date(t.start);
     origEnd = new Date(t.end);
+    origWorkDays = countWorkingDays(origStart, origEnd);
     deltaRows = 0;
     preDragSnapshot = snapshotState();
     bar.classList.add("dragging");
@@ -906,12 +933,11 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     if (mode === "move") {
       newStart.setDate(newStart.getDate() + deltaDays);
       // Snap the start to the next working day, then re-apply the task's
-      // original (calendar-day) duration — dragging never lands on a
-      // weekend/holiday.
+      // original WORKING-day duration (not calendar days) — a 2-workday
+      // task that spans a weekend (e.g. Fri-Mon = 4 calendar days) stays
+      // 2 workdays wherever it's dropped, even across another weekend/holiday.
       newStart = snapForwardToWorkingDay(newStart);
-      const durationDays = Math.round((origEnd - origStart) / DAY_MS);
-      newEnd = new Date(newStart);
-      newEnd.setDate(newEnd.getDate() + durationDays);
+      newEnd = addWorkingDaysInclusive(newStart, origWorkDays);
     } else if (mode === "left") {
       newStart.setDate(newStart.getDate() + deltaDays);
       newStart = snapForwardToWorkingDay(newStart);
@@ -974,12 +1000,12 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         );
         if (ok) {
           chain.forEach((dep) => {
-            dep.start.setDate(dep.start.getDate() + shiftDays);
-            dep.end.setDate(dep.end.getDate() + shiftDays);
-            const dur = Math.round((dep.end - dep.start) / DAY_MS);
-            dep.start = snapForwardToWorkingDay(dep.start);
-            dep.end = new Date(dep.start);
-            dep.end.setDate(dep.end.getDate() + dur);
+            const depWorkDays = countWorkingDays(dep.start, dep.end);
+            let newDepStart = new Date(dep.start);
+            newDepStart.setDate(newDepStart.getDate() + shiftDays);
+            newDepStart = snapForwardToWorkingDay(newDepStart);
+            dep.start = newDepStart;
+            dep.end = addWorkingDaysInclusive(newDepStart, depWorkDays);
             chainShifted.push(dep);
           });
         }
