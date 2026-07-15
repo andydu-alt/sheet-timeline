@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Core General — Timeline</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root{
+    --bg:#f4f5f7; --panel:#ffffff; --border:#e1e4e8; --text:#1f2328; --muted:#6b7280;
+    --accent:#2563eb; --accent-soft:#dbeafe; --today:#ef4444;
+    --lane-a:#ffffff; --lane-b:#fafbfc;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
+  #toolbar{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;position:sticky;top:0;z-index:50;}
+  #toolbar h1{font-size:15px;font-weight:600;margin:0 12px 0 0;white-space:nowrap;}
+  button, select{font:inherit;font-size:13px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:#fff;cursor:pointer;color:var(--text);}
+  button:hover{background:#f0f2f5;}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+  button.primary:hover{background:#1d4ed8;}
+  #status{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap;}
+  #status.saving{color:#b45309;}
+  #status.error{color:#dc2626;}
+  #legend{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);}
+  .dot{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:4px;}
+
+  #signin-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:70vh;gap:14px;text-align:center;padding:20px;}
+  #signin-screen p{color:var(--muted);font-size:14px;max-width:420px;}
+
+  #timeline-wrap{display:none;position:relative;overflow:auto;height:calc(100vh - 53px);}
+  #grid{position:relative;}
+
+  #month-header{position:sticky;top:0;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:34px;}
+  #day-header{position:sticky;top:34px;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:22px;}
+  .month-cell{position:absolute;top:0;height:34px;border-right:1px solid var(--border);font-size:12px;font-weight:600;padding:8px 0 0 6px;color:var(--text);white-space:nowrap;overflow:hidden;}
+  .day-cell{position:absolute;top:0;height:22px;border-right:1px solid #eee;font-size:10px;color:var(--muted);text-align:center;line-height:22px;}
+  .day-cell.weekend{background:#f7f7f8;}
+
+  #lane-labels{position:sticky;left:0;z-index:15;width:170px;background:var(--panel);border-right:1px solid var(--border);}
+  .corner{position:sticky;left:0;top:0;z-index:30;width:170px;background:var(--panel);border-right:1px solid var(--border);border-bottom:1px solid var(--border);height:56px;}
+
+  #body-row{display:flex;}
+  .lane-label{position:absolute;left:0;width:170px;padding:8px 10px;font-size:12px;font-weight:600;border-bottom:1px solid var(--border);border-right:1px solid var(--border);background:var(--panel);display:flex;align-items:center;}
+  .lane-label small{display:block;font-weight:400;color:var(--muted);font-size:10.5px;margin-top:2px;}
+
+  .lane-bg{position:absolute;left:170px;right:0;border-bottom:1px solid var(--border);}
+
+  .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);z-index:5;}
+
+  .bar{position:absolute;height:26px;border-radius:5px;font-size:11.5px;color:#fff;display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:hidden;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15);user-select:none;}
+  .bar:active{cursor:grabbing;}
+  .bar.dragging{opacity:.85;box-shadow:0 3px 8px rgba(0,0,0,.3);z-index:40;}
+  .bar .handle{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;}
+  .bar .handle.left{left:0;}
+  .bar .handle.right{right:0;}
+  .bar.status-done{background:#16a34a;}
+  .bar.status-inprogress{background:#2563eb;}
+  .bar.status-notstart{background:#6b7280;}
+  .bar.status-other{background:#7c3aed;}
+
+  #tooltip{position:fixed;background:#111827;color:#fff;font-size:12px;padding:8px 10px;border-radius:6px;pointer-events:none;z-index:100;max-width:320px;line-height:1.5;display:none;box-shadow:0 4px 12px rgba(0,0,0,.3);}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>Core General — Timeline</h1>
+  <button id="btn-signin">Sign in with Google</button>
+  <button id="btn-reload" style="display:none;">Reload from Sheet</button>
+  <select id="zoom" style="display:none;">
+    <option value="10">Zoom: Month</option>
+    <option value="24" selected>Zoom: Week</option>
+    <option value="42">Zoom: Day</option>
+  </select>
+  <div id="legend" style="display:none;">
+    <span><span class="dot" style="background:#6b7280;"></span>Not Started</span>
+    <span><span class="dot" style="background:#2563eb;"></span>In Progress</span>
+    <span><span class="dot" style="background:#16a34a;"></span>Done</span>
+  </div>
+  <span id="status"></span>
+</div>
+
+<div id="signin-screen">
+  <p>Sign in with your Google account to load the <b>Core General Raw Data</b> sheet as a drag-and-drop timeline. Dragging a bar updates the Start/End date cells directly in the sheet.</p>
+</div>
+
+<div id="timeline-wrap">
+  <div class="corner"></div>
+  <div id="grid"></div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+/* ============================================================
+   CONFIG — fill these in before deploying
+   ============================================================ */
+const CONFIG = {
+  CLIENT_ID: "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com",
+  SPREADSHEET_ID: "1mM_6BOF2_XsmXJudqXMic95eAmxAShVBfbILxm7F86I",
+  SHEET_NAME: "Core general Raw Data",
+  // Columns (0-indexed) within the fetched range A:L
+  COL: { ASSIGNEE:0, DEPT:1, JIRA:2, FEATURE:3, TASKS:4, ACTIVITY:5, START:6, END:7, EST:8, FORECAST:9, STATUS:10, NAMEINPLAN:11 },
+  SCOPES: "https://www.googleapis.com/auth/spreadsheets",
+};
+
+/* ============================================================
+   State
+   ============================================================ */
+let accessToken = null;
+let tokenClient = null;
+let tasks = [];        // parsed task rows
+let lanes = [];         // { name, rows: [taskIndices...], subRowCount }
+let minDate, maxDate;
+let pxPerDay = 24;
+const ROW_H = 34;
+const DAY_MS = 86400000;
+
+/* ============================================================
+   Auth
+   ============================================================ */
+function initAuth() {
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CONFIG.CLIENT_ID,
+    scope: CONFIG.SCOPES,
+    callback: (resp) => {
+      if (resp.error) { setStatus("Sign-in failed: " + resp.error, true); return; }
+      accessToken = resp.access_token;
+      onSignedIn();
+    },
+  });
+}
+
+document.getElementById("btn-signin").addEventListener("click", () => {
+  if (!tokenClient) { setStatus("Google auth not loaded yet — retry in a second.", true); return; }
+  tokenClient.requestAccessToken({ prompt: accessToken ? "" : "consent" });
+});
+
+document.getElementById("btn-reload").addEventListener("click", loadData);
+
+document.getElementById("zoom").addEventListener("change", (e) => {
+  pxPerDay = parseInt(e.target.value, 10);
+  render();
+});
+
+function onSignedIn() {
+  document.getElementById("signin-screen").style.display = "none";
+  document.getElementById("timeline-wrap").style.display = "block";
+  document.getElementById("btn-signin").textContent = "Re-authenticate";
+  document.getElementById("btn-reload").style.display = "inline-block";
+  document.getElementById("zoom").style.display = "inline-block";
+  document.getElementById("legend").style.display = "flex";
+  loadData();
+}
+
+/* ============================================================
+   Data loading
+   ============================================================ */
+function setStatus(msg, isError, saving) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = isError ? "error" : (saving ? "saving" : "");
+}
+
+async function sheetsFetch(path, opts = {}) {
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}${path}`, {
+    ...opts,
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...(opts.headers || {}) },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Sheets API ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+function parseDate(str) {
+  if (!str) return null;
+  str = str.trim();
+  let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (!m) return null;
+  const month = parseInt(m[1], 10), day = parseInt(m[2], 10), year = parseInt(m[3], 10);
+  const d = new Date(year, month - 1, day);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function fmtDate(d) {
+  return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+}
+
+function statusClass(status) {
+  if (!status) return "status-other";
+  const s = status.toLowerCase();
+  if (s.includes("done")) return "status-done";
+  if (s.includes("progress")) return "status-inprogress";
+  if (s.includes("not start")) return "status-notstart";
+  return "status-other";
+}
+
+async function loadData() {
+  setStatus("Loading sheet…");
+  try {
+    const range = `'${CONFIG.SHEET_NAME}'!A2:L3000`;
+    const data = await sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS`);
+    const rows = data.values || [];
+    const C = CONFIG.COL;
+    tasks = [];
+    rows.forEach((row, i) => {
+      const assignee = (row[C.ASSIGNEE] || "").trim();
+      const start = parseDate(row[C.START]);
+      const end = parseDate(row[C.END]);
+      if (!assignee || !start || !end) return; // skip blank/header/incomplete rows
+      tasks.push({
+        rowNum: i + 2, // actual sheet row (1-based, +1 for header)
+        assignee,
+        department: row[C.DEPT] || "",
+        jira: row[C.JIRA] || "",
+        feature: row[C.FEATURE] || "",
+        taskName: row[C.TASKS] || "",
+        activity: row[C.ACTIVITY] || "",
+        start, end,
+        est: row[C.EST] || "",
+        status: row[C.STATUS] || "",
+        label: (row[C.FEATURE] || row[C.TASKS] || row[C.ACTIVITY] || "Task"),
+      });
+    });
+    buildLanes();
+    render();
+    setStatus(`Loaded ${tasks.length} tasks · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Load failed: " + err.message, true);
+  }
+}
+
+function buildLanes() {
+  const byAssignee = new Map();
+  tasks.forEach((t, idx) => {
+    if (!byAssignee.has(t.assignee)) byAssignee.set(t.assignee, []);
+    byAssignee.get(t.assignee).push(idx);
+  });
+
+  lanes = [];
+  for (const [name, idxs] of byAssignee.entries()) {
+    idxs.sort((a, b) => tasks[a].start - tasks[b].start);
+    const subRowEnds = []; // end date currently occupying each sub-row
+    idxs.forEach((idx) => {
+      const t = tasks[idx];
+      let placed = false;
+      for (let r = 0; r < subRowEnds.length; r++) {
+        if (t.start > subRowEnds[r]) { t.subRow = r; subRowEnds[r] = t.end; placed = true; break; }
+      }
+      if (!placed) { t.subRow = subRowEnds.length; subRowEnds.push(t.end); }
+    });
+    lanes.push({ name, idxs, subRowCount: Math.max(1, subRowEnds.length) });
+  }
+
+  minDate = new Date(Math.min(...tasks.map(t => t.start.getTime())));
+  maxDate = new Date(Math.max(...tasks.map(t => t.end.getTime())));
+  minDate.setDate(minDate.getDate() - 7);
+  maxDate.setDate(maxDate.getDate() + 14);
+}
+
+function dayOffset(d) {
+  return Math.round((d - minDate) / DAY_MS);
+}
+
+/* ============================================================
+   Render
+   ============================================================ */
+function render() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  if (!tasks.length) { grid.style.width = "100%"; grid.style.height = "200px"; return; }
+
+  const totalDays = dayOffset(maxDate) + 1;
+  const gridWidth = totalDays * pxPerDay;
+  let totalHeight = 56; // header height offset baseline (not used directly, lanes positioned from 0 within body)
+
+  grid.style.width = (170 + gridWidth) + "px";
+
+  // Month header
+  const monthHeader = document.createElement("div");
+  monthHeader.id = "month-header";
+  monthHeader.style.width = (170 + gridWidth) + "px";
+  const monthLabel = document.createElement("div");
+  monthLabel.className = "corner";
+  monthLabel.style.position = "sticky";
+  monthHeader.appendChild(monthLabel);
+  let cursor = new Date(minDate);
+  cursor.setDate(1);
+  while (cursor <= maxDate) {
+    const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    const segStart = cursor < minDate ? minDate : cursor;
+    const segEnd = next < maxDate ? next : new Date(maxDate.getTime() + DAY_MS);
+    const left = 170 + dayOffset(segStart) * pxPerDay;
+    const width = Math.max(1, (dayOffset(segEnd) - dayOffset(segStart)) * pxPerDay);
+    const cell = document.createElement("div");
+    cell.className = "month-cell";
+    cell.style.left = left + "px";
+    cell.style.width = width + "px";
+    cell.textContent = cursor.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+    monthHeader.appendChild(cell);
+    cursor = next;
+  }
+  grid.appendChild(monthHeader);
+
+  // Day header
+  const dayHeader = document.createElement("div");
+  dayHeader.id = "day-header";
+  dayHeader.style.width = (170 + gridWidth) + "px";
+  for (let d = 0; d < totalDays; d++) {
+    const date = new Date(minDate.getTime() + d * DAY_MS);
+    const cell = document.createElement("div");
+    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+    cell.className = "day-cell" + (isWeekend ? " weekend" : "");
+    cell.style.left = (170 + d * pxPerDay) + "px";
+    cell.style.width = pxPerDay + "px";
+    if (pxPerDay >= 20) cell.textContent = date.getDate();
+    dayHeader.appendChild(cell);
+  }
+  grid.appendChild(dayHeader);
+
+  // Body
+  const body = document.createElement("div");
+  body.id = "body-row";
+  body.style.position = "relative";
+  body.style.width = (170 + gridWidth) + "px";
+
+  let y = 0;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayX = 170 + dayOffset(today) * pxPerDay;
+
+  lanes.forEach((lane) => {
+    const laneHeight = lane.subRowCount * ROW_H;
+
+    const bg = document.createElement("div");
+    bg.className = "lane-bg";
+    bg.style.top = y + "px";
+    bg.style.height = laneHeight + "px";
+    body.appendChild(bg);
+
+    const label = document.createElement("div");
+    label.className = "lane-label";
+    label.style.top = y + "px";
+    label.style.height = laneHeight + "px";
+    label.innerHTML = `${lane.name}<small>${lane.idxs.length} task${lane.idxs.length !== 1 ? "s" : ""}</small>`;
+    body.appendChild(label);
+
+    lane.idxs.forEach((idx) => {
+      const t = tasks[idx];
+      const left = 170 + dayOffset(t.start) * pxPerDay;
+      const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
+      const bar = document.createElement("div");
+      bar.className = "bar " + statusClass(t.status);
+      bar.style.left = left + "px";
+      bar.style.top = (y + t.subRow * ROW_H + 4) + "px";
+      bar.style.width = width + "px";
+      bar.dataset.idx = idx;
+      bar.innerHTML = `<span class="bar-text">${escapeHtml(t.label)}</span>
+        <div class="handle left"></div><div class="handle right"></div>`;
+      attachDrag(bar, t);
+      attachTooltip(bar, t);
+      body.appendChild(bar);
+    });
+
+    y += laneHeight;
+  });
+
+  totalHeight = y;
+
+  if (todayX >= 170) {
+    const line = document.createElement("div");
+    line.className = "today-line";
+    line.style.left = todayX + "px";
+    line.style.height = totalHeight + "px";
+    body.appendChild(line);
+  }
+
+  body.style.height = totalHeight + "px";
+  grid.appendChild(body);
+  grid.style.height = (56 + totalHeight) + "px";
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+/* ============================================================
+   Tooltip
+   ============================================================ */
+function attachTooltip(bar, t) {
+  const tip = document.getElementById("tooltip");
+  bar.addEventListener("mouseenter", (e) => {
+    tip.innerHTML = `<b>${escapeHtml(t.feature || t.taskName || t.activity)}</b><br>
+      ${t.jira ? "JIRA: " + escapeHtml(t.jira) + "<br>" : ""}
+      ${t.activity ? "Activity: " + escapeHtml(t.activity) + "<br>" : ""}
+      Assignee: ${escapeHtml(t.assignee)}<br>
+      ${fmtDate(t.start)} → ${fmtDate(t.end)}<br>
+      ${t.status ? "Status: " + escapeHtml(t.status) : ""}`;
+    tip.style.display = "block";
+  });
+  bar.addEventListener("mousemove", (e) => {
+    tip.style.left = (e.clientX + 14) + "px";
+    tip.style.top = (e.clientY + 14) + "px";
+  });
+  bar.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+}
+
+/* ============================================================
+   Drag & resize
+   ============================================================ */
+function attachDrag(bar, t) {
+  let mode = null; // 'move' | 'left' | 'right'
+  let startX = 0;
+  let origStart, origEnd;
+
+  bar.addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("handle")) {
+      mode = e.target.classList.contains("left") ? "left" : "right";
+    } else {
+      mode = "move";
+    }
+    startX = e.clientX;
+    origStart = new Date(t.start);
+    origEnd = new Date(t.end);
+    bar.classList.add("dragging");
+    document.getElementById("tooltip").style.display = "none";
+    e.preventDefault();
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!mode) return;
+    const deltaPx = e.clientX - startX;
+    const deltaDays = Math.round(deltaPx / pxPerDay);
+    let newStart = new Date(origStart), newEnd = new Date(origEnd);
+    if (mode === "move") {
+      newStart.setDate(newStart.getDate() + deltaDays);
+      newEnd.setDate(newEnd.getDate() + deltaDays);
+    } else if (mode === "left") {
+      newStart.setDate(newStart.getDate() + deltaDays);
+      if (newStart > origEnd) newStart = new Date(origEnd);
+    } else if (mode === "right") {
+      newEnd.setDate(newEnd.getDate() + deltaDays);
+      if (newEnd < origStart) newEnd = new Date(origStart);
+    }
+    t.start = newStart; t.end = newEnd;
+    const left = 170 + dayOffset(t.start) * pxPerDay;
+    const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
+    bar.style.left = left + "px";
+    bar.style.width = width + "px";
+  });
+
+  document.addEventListener("mouseup", async () => {
+    if (!mode) return;
+    bar.classList.remove("dragging");
+    const changed = t.start.getTime() !== origStart.getTime() || t.end.getTime() !== origEnd.getTime();
+    mode = null;
+    if (!changed) return;
+    await saveDates(t, bar);
+  });
+}
+
+async function saveDates(t, bar) {
+  setStatus(`Saving row ${t.rowNum}…`, false, true);
+  try {
+    const range = `'${CONFIG.SHEET_NAME}'!G${t.rowNum}:H${t.rowNum}`;
+    await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
+      method: "PUT",
+      body: JSON.stringify({ range, majorDimension: "ROWS", values: [[fmtDate(t.start), fmtDate(t.end)]] }),
+    });
+    setStatus(`Saved row ${t.rowNum}: ${fmtDate(t.start)} → ${fmtDate(t.end)} · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Save failed — reload to resync: " + err.message, true);
+  }
+}
+
+/* ============================================================
+   Boot
+   ============================================================ */
+window.addEventListener("load", () => {
+  const check = setInterval(() => {
+    if (window.google && google.accounts && google.accounts.oauth2) {
+      clearInterval(check);
+      initAuth();
+    }
+  }, 100);
+});
+</script>
+</body>
+</html>
