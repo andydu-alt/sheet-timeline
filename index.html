@@ -81,6 +81,8 @@
 
   .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);z-index:5;}
 
+  #current-assignee-banner{display:none;}
+
   .bar{position:absolute;z-index:1;height:26px;border-radius:5px;font-size:11.5px;color:var(--text);display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:visible;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15),inset 0 0 0 1px rgba(0,0,0,.12);user-select:none;touch-action:none;}
   .bar-text{overflow:visible;font-weight:400;color:#000;}
   .bar:active{cursor:grabbing;}
@@ -148,6 +150,18 @@
     box-shadow:none;border:1px solid var(--border);margin-top:6px;
   }
   body.mobile-mode #task-modal{width:94vw;padding:16px;}
+
+  /* Frozen left assignee column is replaced by a scroll-synced banner on
+     mobile, reclaiming its width for the timeline itself. */
+  body.mobile-mode .corner{width:0 !important;}
+  body.mobile-mode .lane-label{display:none;}
+  body.mobile-mode #current-assignee-banner{
+    display:flex;align-items:center;position:sticky;top:0;left:0;z-index:25;
+    height:32px;padding:0 12px;background:#111827;color:#fff;font-size:13px;font-weight:600;
+    width:100%;box-shadow:0 1px 4px rgba(0,0,0,.2);
+  }
+  body.mobile-mode #month-header{top:32px;}
+  body.mobile-mode #day-header{top:66px;}
 </style>
 </head>
 <body>
@@ -205,6 +219,7 @@
 </div>
 
 <div id="timeline-wrap">
+  <div id="current-assignee-banner"></div>
   <div id="grid"></div>
 </div>
 
@@ -249,7 +264,8 @@ const CONFIG = {
   TOKEN_STORAGE_KEY: "sheet_timeline_token_v1",
 };
 
-const LABEL_W = 118;
+let LABEL_W = 118; // 0 in mobile mode — the frozen label column is replaced by a scroll-synced banner instead
+let laneScrollRanges = []; // [{name, yStart}] in body-row-relative Y, rebuilt each render() — drives the mobile assignee banner
 const ACTIVITY_PALETTE = ["#bfdbfe","#bbf7d0","#fecaca","#fde68a","#ddd6fe","#a5f3fc","#fbcfe8","#d9f99d","#fed7aa","#c7d2fe","#99f6e4","#fecdd3","#e9d5ff","#a7f3d0","#bae6fd","#fef08a"];
 
 /* ============================================================
@@ -539,8 +555,12 @@ document.getElementById("btn-legend-toggle").addEventListener("click", () => {
 function setMobileMode(on) {
   document.body.classList.toggle("mobile-mode", on);
   document.getElementById("btn-mobile-toggle").textContent = on ? "🖥 Desktop view" : "📱 Mobile view";
+  // Mobile trades the frozen left assignee column for a scroll-synced
+  // banner instead, so it needs zero reserved width.
+  LABEL_W = on ? 0 : 118;
   uiState.mobileMode = on;
   saveUiState();
+  if (lanes.length) { render(); updateAssigneeBanner(); }
 }
 document.getElementById("btn-mobile-toggle").addEventListener("click", () => {
   setMobileMode(!document.body.classList.contains("mobile-mode"));
@@ -1055,8 +1075,10 @@ function render() {
   const today = new Date(); today.setHours(0,0,0,0);
   const todayX = LABEL_W + dayOffset(today) * pxPerDay;
 
+  laneScrollRanges = [];
   lanes.forEach((lane) => {
     const laneHeight = lane.subRowCount * ROW_H;
+    laneScrollRanges.push({ name: lane.name, yStart: y });
 
     const bg = document.createElement("div");
     bg.className = "lane-bg";
@@ -1126,7 +1148,23 @@ function render() {
   body.style.height = totalHeight + "px";
   grid.appendChild(body);
   grid.style.height = (56 + totalHeight) + "px";
+  updateAssigneeBanner();
 }
+
+// Mobile: the top banner tracks whichever assignee's lane is currently
+// scrolled to the top of the timeline, replacing the frozen left column.
+function updateAssigneeBanner() {
+  const banner = document.getElementById("current-assignee-banner");
+  if (!banner || !laneScrollRanges.length) return;
+  const wrap = document.getElementById("timeline-wrap");
+  const target = wrap.scrollTop + 8; // small lookahead so it flips right as a lane reaches the top
+  let current = laneScrollRanges[0].name;
+  for (const r of laneScrollRanges) {
+    if (r.yStart <= target) current = r.name; else break;
+  }
+  banner.textContent = "👤 " + current;
+}
+document.getElementById("timeline-wrap").addEventListener("scroll", updateAssigneeBanner, { passive: true });
 
 const _measureCanvas = document.createElement("canvas");
 const _measureCtx = _measureCanvas.getContext("2d");
