@@ -1135,6 +1135,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     mode = null;
 
     // Vertical drag (whole-bar move only) = reorder priority within the lane.
+    let chainFormulaFixed = [];
     if (wasMove && lane && deltaRows !== 0) {
       const srcPos = lane.idxs.indexOf(idx);
       const destPos = Math.max(0, Math.min(lane.idxs.length - 1, srcPos + deltaRows));
@@ -1144,6 +1145,31 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         lane.idxs.forEach((ix, r) => { tasks[ix].subRow = r; });
         manualOrder[lane.name] = lane.idxs.map(ix => tasks[ix].rowNum);
         localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
+
+        // Reordering can leave a Start formula (=WORKDAY(H<prevRow>,1,...))
+        // pointing at a task that's no longer immediately before it —
+        // that mismatch is exactly what caused the row-packing confusion
+        // last time. Offer to re-point those formulas at the new
+        // predecessor and cascade the resulting date shift.
+        const fixups = findChainFormulaMismatches(lane);
+        if (fixups.length) {
+          const ok = window.confirm(
+            `Reordering left ${fixups.length} Start-date formula${fixups.length > 1 ? "s" : ""} pointing at the wrong "previous task" (they still reference where this task used to sit).\n\nUpdate ${fixups.length > 1 ? "them" : "it"} to reference the new previous task, and shift the resulting dates?`
+          );
+          if (ok) {
+            for (const fx of fixups) {
+              const depOrigStart = new Date(fx.t.start), depOrigEnd = new Date(fx.t.end);
+              const newFormula = `=WORKDAY(H${fx.newPrevTask.rowNum},1,Holidays!$B$2:$B)`;
+              await writeFormula(fx.t, "start", newFormula);
+              fx.t.start = excelWorkday(fx.newPrevTask.end, 1);
+              if (fx.t.endIsFormula) {
+                const parsedEnd = parseWorkdayFormula(fx.t.endFormulaRaw);
+                if (parsedEnd) fx.t.end = excelWorkday(fx.t.start, (fx.t.estNum || 0) * 100 / parsedEnd.workload);
+              }
+              chainFormulaFixed.push({ t: fx.t, origStart: depOrigStart, origEnd: depOrigEnd });
+            }
+          }
+        }
       }
     }
 
@@ -1174,7 +1200,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     }
 
     const reordered = wasMove && lane && deltaRows !== 0;
-    if (changed || reordered || chainShifted.length) {
+    if (changed || reordered || chainShifted.length || chainFormulaFixed.length) {
       commitUndoPoint(preDragSnapshot);
     }
 
@@ -1218,6 +1244,28 @@ function findDependencyChain(anchorTask, lane, anchorOrigEnd) {
     }
   }
   return chain;
+}
+
+// Scans a lane (in its CURRENT priority order) for tasks whose Start
+// formula is a "=WORKDAY(H<row>,1,...)" chain reference that no longer
+// points at the task now immediately before it — i.e. the formula and the
+// on-screen order have drifted apart, usually from drag-reordering after
+// the formula was written. Returns [{ t, oldPrevRow, newPrevTask }, ...].
+function findChainFormulaMismatches(lane) {
+  const fixups = [];
+  lane.idxs.forEach((idx, i) => {
+    const t = tasks[idx];
+    if (!t.startIsFormula) return;
+    const m = (t.startFormulaRaw || "").match(/WORKDAY\(\s*H(\d+)/i);
+    if (!m) return; // not our chain-formula pattern — leave it alone
+    const referencedRow = parseInt(m[1], 10);
+    if (i === 0) return; // no predecessor to compare against
+    const newPrevTask = tasks[lane.idxs[i - 1]];
+    if (referencedRow !== newPrevTask.rowNum) {
+      fixups.push({ t, oldPrevRow: referencedRow, newPrevTask });
+    }
+  });
+  return fixups;
 }
 
 // Writes exactly one column (Start=G or End=H) for one task, and marks that
