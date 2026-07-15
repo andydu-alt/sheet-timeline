@@ -16,6 +16,10 @@
   #toolbar{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;position:relative;z-index:60;flex-shrink:0;}
   #toolbar h1{font-size:15px;font-weight:600;margin:0 12px 0 0;white-space:nowrap;}
   button, select{font:inherit;font-size:13px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:#fff;cursor:pointer;color:var(--text);}
+  button.icon-btn{position:relative;padding:6px 12px;font-size:16px;line-height:1;display:inline-flex;align-items:center;justify-content:center;}
+  button.icon-btn:disabled{opacity:.4;cursor:default;}
+  button.icon-btn i{position:absolute;top:-5px;right:-5px;font-style:normal;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:8px;padding:0 4px;min-width:14px;text-align:center;line-height:15px;}
+  button.icon-btn i:empty{display:none;}
   button:hover{background:#f0f2f5;}
   #status{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap;}
   #status.saving{color:#b45309;}
@@ -58,7 +62,7 @@
 
   #month-header{position:sticky;top:0;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:34px;}
   #day-header{position:sticky;top:34px;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:22px;}
-  .corner{position:sticky;left:0;z-index:30;width:170px;height:34px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);}
+  .corner{position:sticky;left:0;z-index:30;width:118px;height:34px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);}
   .corner.corner-day{height:22px;}
   .month-cell{position:absolute;top:0;height:34px;border-right:1px solid var(--border);font-size:12px;font-weight:600;padding:8px 0 0 6px;color:var(--text);white-space:nowrap;overflow:hidden;}
   .day-cell{position:absolute;top:0;height:22px;border-right:1px solid #eee;font-size:10px;color:var(--muted);text-align:center;line-height:22px;}
@@ -67,8 +71,8 @@
   #body-row{position:relative;}
   .lane-bg{position:absolute;left:0;right:0;border-bottom:1px solid var(--border);}
   .lane-label-wrap{position:absolute;left:0;width:100%;}
-  .lane-label{position:sticky;left:0;z-index:12;width:170px;padding:8px 10px;font-size:12px;font-weight:600;background:var(--panel);border-right:1px solid var(--border);height:100%;display:flex;align-items:center;}
-  .lane-label small{display:block;font-weight:400;color:var(--muted);font-size:10.5px;margin-top:2px;}
+  .lane-label{position:sticky;left:0;z-index:12;width:118px;padding:8px 8px;font-size:11.5px;font-weight:600;background:var(--panel);border-right:1px solid var(--border);height:100%;display:flex;align-items:center;overflow:hidden;line-height:1.25;}
+  .lane-label small{display:block;font-weight:400;color:var(--muted);font-size:10px;margin-top:2px;}
 
   .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);z-index:5;}
 
@@ -105,9 +109,10 @@
   <button id="btn-signin">Sign in with Google</button>
   <button id="btn-reload" style="display:none;">Reload from Sheet</button>
   <button id="btn-today" style="display:none;">Today</button>
-  <button id="btn-undo" style="display:none;" disabled>Undo</button>
-  <button id="btn-redo" style="display:none;" disabled>Redo</button>
+  <button id="btn-undo" class="icon-btn" style="display:none;" disabled title="Undo"><span>↶</span><i id="undo-count"></i></button>
+  <button id="btn-redo" class="icon-btn" style="display:none;" disabled title="Redo"><span>↷</span><i id="redo-count"></i></button>
   <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
+  <button id="btn-apply-frd-spec" style="display:none;">Apply FRD/Spec Formulas</button>
   <div id="assignee-filter" style="display:none;">
     <button id="btn-assignee">Assignees ▾</button>
     <div id="assignee-panel">
@@ -190,7 +195,7 @@ const CONFIG = {
   TOKEN_STORAGE_KEY: "sheet_timeline_token_v1",
 };
 
-const LABEL_W = 170;
+const LABEL_W = 118;
 const ACTIVITY_PALETTE = ["#bfdbfe","#bbf7d0","#fecaca","#fde68a","#ddd6fe","#a5f3fc","#fbcfe8","#d9f99d","#fed7aa","#c7d2fe","#99f6e4","#fecdd3","#e9d5ff","#a7f3d0","#bae6fd","#fef08a"];
 
 /* ============================================================
@@ -335,9 +340,11 @@ function updateUndoRedoButtons() {
   const redoBtn = document.getElementById("btn-redo");
   if (!undoBtn) return;
   undoBtn.disabled = undoStack.length === 0;
-  undoBtn.textContent = `Undo${undoStack.length ? ` (${undoStack.length})` : ""}`;
+  undoBtn.title = `Undo${undoStack.length ? ` (${undoStack.length})` : ""}`;
+  document.getElementById("undo-count").textContent = undoStack.length || "";
   redoBtn.disabled = redoStack.length === 0;
-  redoBtn.textContent = `Redo${redoStack.length ? ` (${redoStack.length})` : ""}`;
+  redoBtn.title = `Redo${redoStack.length ? ` (${redoStack.length})` : ""}`;
+  document.getElementById("redo-count").textContent = redoStack.length || "";
 }
 
 document.getElementById("btn-undo").addEventListener("click", undo);
@@ -445,6 +452,7 @@ function onSignedIn() {
   document.getElementById("activity-filter").style.display = "inline-block";
   document.getElementById("zoom").style.display = "inline-block";
   document.getElementById("btn-legend-toggle").style.display = "inline-block";
+  document.getElementById("btn-apply-frd-spec").style.display = "inline-block";
   document.getElementById("legend").classList.add("shown");
 
   // Restore saved zoom + legend visibility before the first render.
@@ -1195,6 +1203,100 @@ async function saveChangedFields(t, origStart, origEnd, force) {
   if (startChanged && (force === "start" || !t.startIsFormula)) await saveField(t, "start");
   if (endChanged && (force === "end" || !t.endIsFormula)) await saveField(t, "end");
 }
+
+// Writes a formula string (must start with "=") to one cell and marks the
+// field as formula-driven — used by the recalculate modal and the bulk
+// FRD/Spec formula action below, so both stay real formulas going forward.
+async function writeFormula(t, field, formula) {
+  const col = field === "start" ? "G" : "H";
+  const range = `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`;
+  await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
+    method: "PUT",
+    body: JSON.stringify({ range, majorDimension: "ROWS", values: [[formula]] }),
+  });
+  if (field === "start") { t.startFormulaRaw = formula; t.startIsFormula = true; }
+  else { t.endFormulaRaw = formula; t.endIsFormula = true; }
+}
+
+// Same ordering rule as buildLanes (manual drag-order if set, else by Start
+// date) but across ALL tasks regardless of the current assignee/activity
+// filter — used so "previous task" means the same thing here as it does
+// visually in the timeline.
+function orderedTasksByAssignee() {
+  const byAssignee = new Map();
+  tasks.forEach((t) => {
+    if (!byAssignee.has(t.assignee)) byAssignee.set(t.assignee, []);
+    byAssignee.get(t.assignee).push(t);
+  });
+  for (const [name, list] of byAssignee.entries()) {
+    const savedOrder = manualOrder[name];
+    if (savedOrder && savedOrder.length) {
+      const pos = new Map(savedOrder.map((rowNum, i) => [rowNum, i]));
+      list.sort((a, b) => {
+        const oa = pos.has(a.rowNum) ? pos.get(a.rowNum) : Infinity;
+        const ob = pos.has(b.rowNum) ? pos.get(b.rowNum) : Infinity;
+        return oa !== ob ? oa - ob : a.start - b.start;
+      });
+    } else {
+      list.sort((a, b) => a.start - b.start);
+    }
+  }
+  return byAssignee;
+}
+
+const FRD_SPEC_ACTIVITIES = new Set(["frd creation", "spec creation"]);
+const FRD_SPEC_WORKLOAD = 30; // default workload % for these two activities
+
+async function applyFrdSpecFormulas() {
+  const byAssignee = orderedTasksByAssignee();
+  const jobs = []; // { t, startFormula (nullable), endFormula }
+
+  for (const list of byAssignee.values()) {
+    list.forEach((t, i) => {
+      if (!FRD_SPEC_ACTIVITIES.has(activityKey(t.activity).toLowerCase())) return;
+      const prev = i > 0 ? list[i - 1] : null;
+      const startFormula = prev ? `=WORKDAY(H${prev.rowNum},1,Holidays!$B$2:$B)` : null;
+      const endFormula = `=WORKDAY(G${t.rowNum},I${t.rowNum}*100/${FRD_SPEC_WORKLOAD},Holidays!$B$2:$B)`;
+      jobs.push({ t, prev, startFormula, endFormula });
+    });
+  }
+
+  if (!jobs.length) {
+    setStatus("No FRD Creation / Spec Creation tasks found.", true);
+    return;
+  }
+
+  const skippedNoPrev = jobs.filter(j => !j.startFormula).length;
+  const ok = window.confirm(
+    `Apply Start/End formulas to ${jobs.length} FRD Creation / Spec Creation task(s)?\n\n` +
+    `Start = WORKDAY(previous task's End, 1, Holidays)\n` +
+    `End = WORKDAY(Start, Estimate*100/${FRD_SPEC_WORKLOAD}, Holidays)\n\n` +
+    (skippedNoPrev ? `${skippedNoPrev} of them is/are first in their lane (no previous task) — only their End formula will be applied.` : "")
+  );
+  if (!ok) return;
+
+  commitUndoPoint(snapshotState());
+  setStatus(`Applying formulas to ${jobs.length} task(s)…`, false, true);
+  try {
+    for (const job of jobs) {
+      const { t, prev, startFormula, endFormula } = job;
+      if (startFormula) {
+        await writeFormula(t, "start", startFormula);
+        t.start = excelWorkday(prev.end, 1);
+      }
+      await writeFormula(t, "end", endFormula);
+      t.end = excelWorkday(t.start, (t.estNum || 0) * 100 / FRD_SPEC_WORKLOAD);
+    }
+    buildLanes();
+    render();
+    setStatus(`Applied formulas to ${jobs.length} task(s) · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Apply failed partway — reload to check current state: " + err.message, true);
+  }
+}
+
+document.getElementById("btn-apply-frd-spec").addEventListener("click", applyFrdSpecFormulas);
 
 /* ============================================================
    Task detail / recalculate modal — click a bar (without dragging) to
