@@ -70,7 +70,8 @@
 
   .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);z-index:5;}
 
-  .bar{position:absolute;z-index:1;height:26px;border-radius:5px;font-size:11.5px;color:#fff;display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:hidden;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15);user-select:none;}
+  .bar{position:absolute;z-index:1;height:26px;border-radius:5px;font-size:11.5px;color:var(--text);display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:visible;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15);user-select:none;}
+  .bar-text{overflow:visible;font-weight:600;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 4px #fff,0 0 4px #fff;}
   .bar:active{cursor:grabbing;}
   .bar.dragging{opacity:.85;box-shadow:0 3px 8px rgba(0,0,0,.3);z-index:40;}
   .bar .handle{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;}
@@ -566,32 +567,18 @@ function render() {
       bar.dataset.idx = idx;
 
       // Full text is always Feature/Improvement/Support + Activity — never
-      // truncate it silently. If the bar is too narrow to hold that whole
-      // string, keep the bar as a small colored marker at its true
-      // position/width and float the label in a separate element just to
-      // its right, same idea as Google Sheets' native timeline view.
+      // truncated. It always sits anchored at the bar's real start date;
+      // if it's longer than the bar, it simply spills past the colored
+      // area onto the plain background (readable via the white text halo)
+      // rather than being clipped or bumped to a floating label.
       const fullText = t.activity ? `${t.label} • ${t.activity}` : t.label;
-      const neededWidth = measureTextWidth(fullText) + 18; // + horizontal padding
-      const thin = width < neededWidth;
-      let extLabel = null;
-      if (thin) {
-        bar.innerHTML = `<div class="handle left"></div><div class="handle right"></div>`;
-        extLabel = document.createElement("div");
-        extLabel.className = "ext-label";
-        extLabel.style.left = (left + width + 5) + "px";
-        extLabel.style.top = top + "px";
-        extLabel.innerHTML = `<b>${escapeHtml(fullText)}</b><span class="ext-date">${fmtDate(t.start)} - ${fmtDate(t.end)}</span>`;
-      } else {
-        bar.title = fullText;
-        bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
-          <div class="handle left"></div><div class="handle right"></div>`;
-      }
+      bar.title = fullText;
+      bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
+        <div class="handle left"></div><div class="handle right"></div>`;
 
-      attachDrag(bar, t, extLabel, lane, idx, top);
+      attachDrag(bar, t, null, lane, idx, top);
       attachTooltip(bar, t);
-      if (extLabel) attachTooltip(extLabel, t);
       body.appendChild(bar);
-      if (extLabel) body.appendChild(extLabel);
     });
 
     y += laneHeight;
