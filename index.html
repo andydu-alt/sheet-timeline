@@ -162,6 +162,35 @@ let minDate, maxDate;
 let pxPerDay = 24; // overridden from saved uiState.zoom once the DOM is ready, see boot below
 const ROW_H = 34;
 const DAY_MS = 86400000;
+let holidaySet = new Set(); // "YYYY-M-D" keys, Vietnam holidays from the Holidays tab
+
+function dateKey(d) { return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; }
+
+function isWorkingDay(d) {
+  const day = d.getDay();
+  if (day === 0 || day === 6) return false;
+  return !holidaySet.has(dateKey(d));
+}
+
+function snapForwardToWorkingDay(d) {
+  const r = new Date(d);
+  while (!isWorkingDay(r)) r.setDate(r.getDate() + 1);
+  return r;
+}
+
+async function loadHolidays() {
+  try {
+    const data = await sheetsFetch(`/values/${encodeURIComponent("Holidays!B1:B300")}?majorDimension=ROWS`);
+    const rows = data.values || [];
+    holidaySet = new Set();
+    rows.forEach((row) => {
+      const d = parseDate(row[0]);
+      if (d) holidaySet.add(dateKey(d));
+    });
+  } catch (err) {
+    console.error("Holiday load failed (dragging will only respect weekends):", err);
+  }
+}
 let activityColors = new Map();
 let selectedAssignees = null; // null = all selected; else Set of names
 let selectedActivities = null; // null = all selected; else Set of activity names
@@ -360,6 +389,7 @@ function colorForActivity(activity) {
 async function loadData() {
   setStatus("Loading sheet…");
   try {
+    if (holidaySet.size === 0) await loadHolidays();
     const range = `'${CONFIG.SHEET_NAME}'!A2:L3000`;
     const data = await sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS`);
     const rows = data.values || [];
@@ -788,12 +818,20 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     let newStart = new Date(origStart), newEnd = new Date(origEnd);
     if (mode === "move") {
       newStart.setDate(newStart.getDate() + deltaDays);
-      newEnd.setDate(newEnd.getDate() + deltaDays);
+      // Snap the start to the next working day, then re-apply the task's
+      // original (calendar-day) duration — dragging never lands on a
+      // weekend/holiday.
+      newStart = snapForwardToWorkingDay(newStart);
+      const durationDays = Math.round((origEnd - origStart) / DAY_MS);
+      newEnd = new Date(newStart);
+      newEnd.setDate(newEnd.getDate() + durationDays);
     } else if (mode === "left") {
       newStart.setDate(newStart.getDate() + deltaDays);
+      newStart = snapForwardToWorkingDay(newStart);
       if (newStart > origEnd) newStart = new Date(origEnd);
     } else if (mode === "right") {
       newEnd.setDate(newEnd.getDate() + deltaDays);
+      newEnd = snapForwardToWorkingDay(newEnd);
       if (newEnd < origStart) newEnd = new Date(origStart);
     }
     t.start = newStart; t.end = newEnd;
@@ -818,9 +856,12 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     bar.classList.remove("dragging");
     bar.style.zIndex = "";
     const wasMove = mode === "move";
+    const wasRight = mode === "right";
     const changed = t.start.getTime() !== origStart.getTime() || t.end.getTime() !== origEnd.getTime();
+    const endChanged = t.end.getTime() !== origEnd.getTime();
     mode = null;
 
+    // Vertical drag (whole-bar move only) = reorder priority within the lane.
     if (wasMove && lane && deltaRows !== 0) {
       const srcPos = lane.idxs.indexOf(idx);
       const destPos = Math.max(0, Math.min(lane.idxs.length - 1, srcPos + deltaRows));
@@ -831,14 +872,61 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         manualOrder[lane.name] = lane.idxs.map(ix => tasks[ix].rowNum);
         localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
       }
-      render();
-      if (changed) await saveDates(t, bar);
-      return;
     }
 
-    if (!changed) return;
-    await saveDates(t, bar);
+    // This task's End date moved — offer to shift any downstream task in the
+    // same lane whose Start date was chained to this task's (old) End date.
+    let chainShifted = [];
+    if ((wasMove || wasRight) && endChanged && lane) {
+      const chain = findDependencyChain(t, lane, origEnd);
+      if (chain.length) {
+        const shiftDays = Math.round((t.end.getTime() - origEnd.getTime()) / DAY_MS);
+        const verb = shiftDays > 0 ? "later" : "earlier";
+        const ok = window.confirm(
+          `${Math.abs(shiftDays)} day(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount to keep the dependency intact?`
+        );
+        if (ok) {
+          chain.forEach((dep) => {
+            dep.start.setDate(dep.start.getDate() + shiftDays);
+            dep.end.setDate(dep.end.getDate() + shiftDays);
+            const dur = Math.round((dep.end - dep.start) / DAY_MS);
+            dep.start = snapForwardToWorkingDay(dep.start);
+            dep.end = new Date(dep.start);
+            dep.end.setDate(dep.end.getDate() + dur);
+            chainShifted.push(dep);
+          });
+        }
+      }
+    }
+
+    render();
+    if (changed) await saveDates(t, bar);
+    for (const dep of chainShifted) await saveDates(dep, null);
   });
+}
+
+// Same-lane finish-to-start chain: dep.start === anchorTask's end + 1 day,
+// followed transitively (dep2 chained to dep1's original end, etc).
+function findDependencyChain(anchorTask, lane, anchorOrigEnd) {
+  const chain = [];
+  const used = new Set([anchorTask]);
+  let cursorEnd = anchorOrigEnd;
+  const candidates = lane.idxs.map((ix) => tasks[ix]).filter((x) => x !== anchorTask);
+  let found = true;
+  while (found) {
+    found = false;
+    for (const cand of candidates) {
+      if (used.has(cand)) continue;
+      if (cand.start.getTime() === cursorEnd.getTime() + DAY_MS) {
+        chain.push(cand);
+        used.add(cand);
+        cursorEnd = cand.end;
+        found = true;
+        break;
+      }
+    }
+  }
+  return chain;
 }
 
 async function saveDates(t, bar) {
