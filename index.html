@@ -147,7 +147,7 @@ let tokenExpiryMs = 0;
 let tasks = [];        // parsed task rows
 let lanes = [];         // { name, idxs: [taskIndices...], subRowCount }
 let minDate, maxDate;
-let pxPerDay = 24;
+let pxPerDay = 24; // overridden from saved uiState.zoom once the DOM is ready, see boot below
 const ROW_H = 34;
 const DAY_MS = 86400000;
 let activityColors = new Map();
@@ -155,6 +155,21 @@ let selectedAssignees = null; // null = all selected; else Set of names
 const ORDER_STORAGE_KEY = "sheet_timeline_order_v1";
 let manualOrder = {}; // assignee name -> [rowNum, ...] priority order, drag-to-reorder, persisted locally
 try { manualOrder = JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || "{}"); } catch (e) { manualOrder = {}; }
+
+/* ============================================================
+   UI state (zoom, legend visibility, assignee selection) —
+   persisted across reloads so the view doesn't reset every time.
+   ============================================================ */
+const UI_STATE_KEY = "sheet_timeline_ui_state_v1";
+let uiState = { zoom: 24, legendCollapsed: false, assignees: null }; // assignees: null = not yet customized (default all)
+try {
+  const saved = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "null");
+  if (saved) uiState = { ...uiState, ...saved };
+} catch (e) { /* ignore malformed state */ }
+
+function saveUiState() {
+  localStorage.setItem(UI_STATE_KEY, JSON.stringify(uiState));
+}
 
 /* ============================================================
    Auth — cache the access token in localStorage and try a silent
@@ -220,6 +235,8 @@ function jumpToToday() {
 
 document.getElementById("zoom").addEventListener("change", (e) => {
   pxPerDay = parseInt(e.target.value, 10);
+  uiState.zoom = pxPerDay;
+  saveUiState();
   render();
 });
 
@@ -233,6 +250,15 @@ function onSignedIn() {
   document.getElementById("zoom").style.display = "inline-block";
   document.getElementById("btn-legend-toggle").style.display = "inline-block";
   document.getElementById("legend").classList.add("shown");
+
+  // Restore saved zoom + legend visibility before the first render.
+  pxPerDay = uiState.zoom || 24;
+  document.getElementById("zoom").value = String(pxPerDay);
+  if (uiState.legendCollapsed) {
+    document.getElementById("legend").classList.add("collapsed");
+    document.getElementById("btn-legend-toggle").textContent = "Show legend";
+  }
+
   loadData();
 }
 
@@ -240,6 +266,8 @@ document.getElementById("btn-legend-toggle").addEventListener("click", () => {
   const legend = document.getElementById("legend");
   const collapsed = legend.classList.toggle("collapsed");
   document.getElementById("btn-legend-toggle").textContent = collapsed ? "Show legend" : "Hide legend";
+  uiState.legendCollapsed = collapsed;
+  saveUiState();
 });
 
 /* ============================================================
@@ -346,7 +374,9 @@ async function loadData() {
     });
 
     if (selectedAssignees === null) {
-      selectedAssignees = new Set(tasks.map(t => t.assignee));
+      // First load this session: restore the saved selection if we have one,
+      // otherwise default to everyone selected.
+      selectedAssignees = uiState.assignees ? new Set(uiState.assignees) : new Set(tasks.map(t => t.assignee));
     } else {
       // keep previous selection, but add any brand-new assignees as selected
       const allNames = new Set(tasks.map(t => t.assignee));
@@ -400,6 +430,7 @@ function buildAssigneePanel() {
       <label for="${id}">${escapeHtml(name)} <span style="color:var(--muted);">(${counts.get(name)})</span></label>`;
     row.querySelector("input").addEventListener("change", (e) => {
       if (e.target.checked) selectedAssignees.add(name); else selectedAssignees.delete(name);
+      persistAssigneeSelection();
       buildLanes(); render();
     });
     list.appendChild(row);
@@ -421,12 +452,19 @@ document.getElementById("assignee-search").addEventListener("input", (e) => {
 });
 document.getElementById("assignee-all").addEventListener("click", () => {
   selectedAssignees = new Set(tasks.map(t => t.assignee));
+  persistAssigneeSelection();
   buildAssigneePanel(); buildLanes(); render();
 });
 document.getElementById("assignee-none").addEventListener("click", () => {
   selectedAssignees = new Set();
+  persistAssigneeSelection();
   buildAssigneePanel(); buildLanes(); render();
 });
+
+function persistAssigneeSelection() {
+  uiState.assignees = Array.from(selectedAssignees);
+  saveUiState();
+}
 
 /* ============================================================
    Lanes — one row per task, in priority order (earliest Start first)
