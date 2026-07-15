@@ -20,8 +20,9 @@
   #status.saving{color:#b45309;}
   #status.error{color:#dc2626;}
 
-  #legend{display:flex;gap:10px;align-items:center;font-size:11.5px;color:var(--muted);padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;}
-  #legend.collapsed{display:none;}
+  #legend{display:none;gap:10px;align-items:center;font-size:11.5px;color:var(--muted);padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  #legend.shown{display:flex;}
+  #legend.shown.collapsed{display:none;}
   .dot{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:4px;flex-shrink:0;}
 
   #signin-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:70vh;gap:14px;text-align:center;padding:20px;}
@@ -227,7 +228,7 @@ function onSignedIn() {
   document.getElementById("assignee-filter").style.display = "inline-block";
   document.getElementById("zoom").style.display = "inline-block";
   document.getElementById("btn-legend-toggle").style.display = "inline-block";
-  document.getElementById("legend").style.display = "flex";
+  document.getElementById("legend").classList.add("shown");
   loadData();
 }
 
@@ -551,12 +552,14 @@ function render() {
       bar.style.width = width + "px";
       bar.dataset.idx = idx;
 
-      // Too thin to hold its own text (typical at Quarter zoom) — keep the
-      // bar as a small colored marker at its true position/width, and put
-      // the label in a separate element floated just to its right, same
-      // idea as Google Sheets' native timeline view.
-      const estTextWidth = escapeHtml(t.label).length * 6.2 + 16;
-      const thin = width < Math.min(estTextWidth, 70);
+      // Full text is always Feature/Improvement/Support + Activity — never
+      // truncate it silently. If the bar is too narrow to hold that whole
+      // string, keep the bar as a small colored marker at its true
+      // position/width and float the label in a separate element just to
+      // its right, same idea as Google Sheets' native timeline view.
+      const fullText = t.activity ? `${t.label} • ${t.activity}` : t.label;
+      const estTextWidth = fullText.length * 6.3 + 18;
+      const thin = width < estTextWidth;
       let extLabel = null;
       if (thin) {
         bar.innerHTML = `<div class="handle left"></div><div class="handle right"></div>`;
@@ -564,9 +567,10 @@ function render() {
         extLabel.className = "ext-label";
         extLabel.style.left = (left + width + 5) + "px";
         extLabel.style.top = top + "px";
-        extLabel.innerHTML = `<b>${escapeHtml(t.label)}</b>${t.activity ? "• " + escapeHtml(t.activity) : ""}<span class="ext-date">${fmtDate(t.start)} - ${fmtDate(t.end)}</span>`;
+        extLabel.innerHTML = `<b>${escapeHtml(fullText)}</b><span class="ext-date">${fmtDate(t.start)} - ${fmtDate(t.end)}</span>`;
       } else {
-        bar.innerHTML = `<span class="bar-text">${escapeHtml(t.label)}</span>
+        bar.title = fullText;
+        bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
           <div class="handle left"></div><div class="handle right"></div>`;
       }
 
