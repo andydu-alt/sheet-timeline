@@ -47,7 +47,7 @@
 
   /* --- Single scrollable canvas: both axes on #timeline-wrap so the
      horizontal scrollbar is always visible within the viewport. --- */
-  #timeline-wrap{display:none;overflow:scroll;flex:1;min-height:0;position:relative;cursor:grab;}
+  #timeline-wrap{display:none;overflow:scroll;flex:1;min-height:0;position:relative;cursor:grab;touch-action:none;}
   #timeline-wrap.panning{cursor:grabbing;}
   #timeline-wrap::-webkit-scrollbar{height:15px;width:15px;}
   #timeline-wrap::-webkit-scrollbar-track{background:#e5e7eb;}
@@ -77,11 +77,11 @@
 
   .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);z-index:5;}
 
-  .bar{position:absolute;z-index:1;height:26px;border-radius:5px;font-size:11.5px;color:var(--text);display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:visible;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15),inset 0 0 0 1px rgba(0,0,0,.12);user-select:none;}
+  .bar{position:absolute;z-index:1;height:26px;border-radius:5px;font-size:11.5px;color:var(--text);display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:visible;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15),inset 0 0 0 1px rgba(0,0,0,.12);user-select:none;touch-action:none;}
   .bar-text{overflow:visible;font-weight:400;color:#000;}
   .bar:active{cursor:grabbing;}
   .bar.dragging{opacity:.85;box-shadow:0 3px 8px rgba(0,0,0,.3);z-index:40;}
-  .bar .handle{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;}
+  .bar .handle{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize;touch-action:none;}
   .bar .handle.left{left:0;}
   .bar .handle.right{right:0;}
 
@@ -101,6 +101,17 @@
   #task-modal .preview b{color:#0369a1;}
   #task-modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
   #task-modal .warn{margin-top:10px;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:8px 10px;border-radius:6px;}
+
+  /* --- Mobile view: bigger touch targets, tighter toolbar, roomier bars --- */
+  body.mobile-mode #toolbar{padding:8px;gap:6px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  body.mobile-mode #toolbar h1{display:none;} /* reclaim space for controls on a narrow screen */
+  body.mobile-mode #toolbar button, body.mobile-mode #toolbar select{flex-shrink:0;min-height:40px;padding:8px 12px;font-size:13.5px;}
+  body.mobile-mode #status{display:none;} /* status text wraps badly at narrow widths; check via Reload instead */
+  body.mobile-mode .bar{height:30px;}
+  body.mobile-mode .bar .handle{width:16px;} /* 8px is too small to grab reliably with a finger */
+  body.mobile-mode .lane-label{font-size:11px;}
+  body.mobile-mode #assignee-panel, body.mobile-mode #activity-panel{width:min(320px,90vw);}
+  body.mobile-mode #task-modal{width:94vw;padding:16px;}
 </style>
 </head>
 <body>
@@ -115,6 +126,7 @@
   <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
   <button id="btn-apply-frd-spec" style="display:none;">Apply FRD/Spec Formulas</button>
   <button id="btn-align-waterfall" style="display:none;">Align Waterfall</button>
+  <button id="btn-mobile-toggle">📱 Mobile view</button>
   <div id="assignee-filter" style="display:none;">
     <button id="btn-assignee">Assignees ▾</button>
     <div id="assignee-panel">
@@ -365,7 +377,7 @@ document.addEventListener("keydown", (e) => {
    persisted across reloads so the view doesn't reset every time.
    ============================================================ */
 const UI_STATE_KEY = "sheet_timeline_ui_state_v1";
-let uiState = { zoom: 24, legendCollapsed: false, assignees: null, activities: null }; // null = not yet customized (default all)
+let uiState = { zoom: 24, legendCollapsed: false, assignees: null, activities: null, mobileMode: undefined }; // null = not yet customized (default all); mobileMode: undefined = not yet chosen, auto-detect from screen size
 try {
   const saved = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "null");
   if (saved) uiState = { ...uiState, ...saved };
@@ -480,26 +492,47 @@ document.getElementById("btn-legend-toggle").addEventListener("click", () => {
 });
 
 /* ============================================================
+   Mobile view toggle — bigger touch targets, tighter toolbar.
+   Auto-enables on first load if the screen is phone-sized; the
+   button always lets you override that guess.
+   ============================================================ */
+function setMobileMode(on) {
+  document.body.classList.toggle("mobile-mode", on);
+  document.getElementById("btn-mobile-toggle").textContent = on ? "🖥 Desktop view" : "📱 Mobile view";
+  uiState.mobileMode = on;
+  saveUiState();
+}
+document.getElementById("btn-mobile-toggle").addEventListener("click", () => {
+  setMobileMode(!document.body.classList.contains("mobile-mode"));
+});
+setMobileMode(uiState.mobileMode !== undefined ? uiState.mobileMode : window.matchMedia("(max-width: 640px)").matches);
+
+/* ============================================================
    Pan the view by dragging empty space (not a bar / label / control)
    ============================================================ */
 (function setupPan() {
   const wrap = document.getElementById("timeline-wrap");
   let panning = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
-  wrap.addEventListener("mousedown", (e) => {
+  wrap.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".bar") || e.target.closest(".ext-label") || e.target.closest(".lane-label")) return;
     panning = true;
     startX = e.clientX; startY = e.clientY;
     startLeft = wrap.scrollLeft; startTop = wrap.scrollTop;
     wrap.classList.add("panning");
+    wrap.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
-  document.addEventListener("mousemove", (e) => {
+  wrap.addEventListener("pointermove", (e) => {
     if (!panning) return;
     wrap.scrollLeft = startLeft - (e.clientX - startX);
     wrap.scrollTop = startTop - (e.clientY - startY);
   });
-  document.addEventListener("mouseup", () => {
+  wrap.addEventListener("pointerup", () => {
     if (!panning) return;
+    panning = false;
+    wrap.classList.remove("panning");
+  });
+  wrap.addEventListener("pointercancel", () => {
     panning = false;
     wrap.classList.remove("panning");
   });
@@ -1068,13 +1101,14 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     bar.classList.add("dragging");
     if (mode === "move") bar.style.zIndex = 40;
     document.getElementById("tooltip").style.display = "none";
+    bar.setPointerCapture(e.pointerId); // keep receiving move events even if a finger slides off the bar
     e.preventDefault();
     e.stopPropagation(); // don't also trigger canvas panning
   };
-  bar.addEventListener("mousedown", onMouseDown);
-  if (extLabel) extLabel.addEventListener("mousedown", onMouseDown); // label-only drag = move
+  bar.addEventListener("pointerdown", onMouseDown);
+  if (extLabel) extLabel.addEventListener("pointerdown", onMouseDown); // label-only drag = move
 
-  document.addEventListener("mousemove", (e) => {
+  bar.addEventListener("pointermove", (e) => {
     if (!mode) return;
     lastClientX = e.clientX; lastClientY = e.clientY;
     const deltaPx = e.clientX - startX;
@@ -1114,7 +1148,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     }
   });
 
-  document.addEventListener("mouseup", async () => {
+  bar.addEventListener("pointerup", async () => {
     if (!mode) return;
     bar.classList.remove("dragging");
     bar.style.zIndex = "";
@@ -1221,6 +1255,15 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     for (const { t: dep, origStart: dOrigStart, origEnd: dOrigEnd } of chainShifted) {
       await saveChangedFields(dep, dOrigStart, dOrigEnd);
     }
+  });
+
+  bar.addEventListener("pointercancel", () => {
+    if (!mode) return;
+    mode = null;
+    bar.classList.remove("dragging");
+    bar.style.zIndex = "";
+    t.start = new Date(origStart); t.end = new Date(origEnd);
+    render();
   });
 }
 
