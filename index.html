@@ -831,10 +831,17 @@ function buildLanes() {
   buildWorkdayIndex();
 
   // Compact packing needs dayOffset (workdayIndexMap), so it runs after
-  // buildWorkdayIndex() above.
+  // buildWorkdayIndex() above. Greedy row-packing only produces the
+  // minimal row count when processed in chronological order — packing in
+  // priority order instead (which can drift from time order after manual
+  // drag-reordering) can strand perfectly sequential tasks onto separate
+  // rows for no reason. So pack using a time-sorted pass, independent of
+  // lane.idxs' priority order (which still drives dependency-chain
+  // matching and vertical drag-reorder elsewhere).
   lanes.forEach((lane) => {
     const rowEndCol = []; // last occupied column index per row
-    lane.idxs.forEach((idx) => {
+    const packOrder = [...lane.idxs].sort((a, b) => tasks[a].start - tasks[b].start);
+    packOrder.forEach((idx) => {
       const t = tasks[idx];
       const startCol = dayOffset(t.start), endCol = dayOffset(t.end);
       let placed = false;
