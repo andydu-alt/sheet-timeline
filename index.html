@@ -29,15 +29,16 @@
   #signin-screen p{color:var(--muted);font-size:14px;max-width:420px;}
 
   /* --- Assignee filter dropdown --- */
-  #assignee-filter{position:relative;}
-  #assignee-panel{display:none;position:absolute;top:36px;left:0;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);width:240px;max-height:360px;overflow-y:auto;z-index:70;padding:8px;}
-  #assignee-panel.open{display:block;}
-  #assignee-panel input[type=text]{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:6px;}
+  #assignee-filter, #activity-filter{position:relative;}
+  #assignee-panel, #activity-panel{display:none;position:absolute;top:36px;left:0;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);width:240px;max-height:360px;overflow-y:auto;z-index:70;padding:8px;}
+  #assignee-panel.open, #activity-panel.open{display:block;}
+  #assignee-panel input[type=text], #activity-panel input[type=text]{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:6px;}
   .assignee-actions{display:flex;gap:6px;margin-bottom:6px;}
   .assignee-actions button{flex:1;padding:4px;font-size:11.5px;}
   .assignee-row{display:flex;align-items:center;gap:6px;padding:4px 4px;font-size:12.5px;border-radius:4px;}
   .assignee-row:hover{background:#f0f2f5;}
   .assignee-row label{flex:1;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .assignee-row .dot{margin-right:0;}
 
   /* --- Single scrollable canvas: both axes on #timeline-wrap so the
      horizontal scrollbar is always visible within the viewport. --- */
@@ -100,6 +101,17 @@
       <div id="assignee-list"></div>
     </div>
   </div>
+  <div id="activity-filter" style="display:none;">
+    <button id="btn-activity">Activities ▾</button>
+    <div id="activity-panel">
+      <input type="text" id="activity-search" placeholder="Search activity…">
+      <div class="assignee-actions">
+        <button id="activity-all">All</button>
+        <button id="activity-none">None</button>
+      </div>
+      <div id="activity-list"></div>
+    </div>
+  </div>
   <select id="zoom" style="display:none;">
     <option value="4">Zoom: Quarter</option>
     <option value="10">Zoom: Month</option>
@@ -152,6 +164,7 @@ const ROW_H = 34;
 const DAY_MS = 86400000;
 let activityColors = new Map();
 let selectedAssignees = null; // null = all selected; else Set of names
+let selectedActivities = null; // null = all selected; else Set of activity names
 const ORDER_STORAGE_KEY = "sheet_timeline_order_v1";
 let manualOrder = {}; // assignee name -> [rowNum, ...] priority order, drag-to-reorder, persisted locally
 try { manualOrder = JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || "{}"); } catch (e) { manualOrder = {}; }
@@ -161,7 +174,7 @@ try { manualOrder = JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || "{}");
    persisted across reloads so the view doesn't reset every time.
    ============================================================ */
 const UI_STATE_KEY = "sheet_timeline_ui_state_v1";
-let uiState = { zoom: 24, legendCollapsed: false, assignees: null }; // assignees: null = not yet customized (default all)
+let uiState = { zoom: 24, legendCollapsed: false, assignees: null, activities: null }; // null = not yet customized (default all)
 try {
   const saved = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "null");
   if (saved) uiState = { ...uiState, ...saved };
@@ -247,6 +260,7 @@ function onSignedIn() {
   document.getElementById("btn-reload").style.display = "inline-block";
   document.getElementById("btn-today").style.display = "inline-block";
   document.getElementById("assignee-filter").style.display = "inline-block";
+  document.getElementById("activity-filter").style.display = "inline-block";
   document.getElementById("zoom").style.display = "inline-block";
   document.getElementById("btn-legend-toggle").style.display = "inline-block";
   document.getElementById("legend").classList.add("shown");
@@ -331,8 +345,12 @@ function fmtDate(d) {
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
 }
 
+function activityKey(activity) {
+  return (activity || "Uncategorized").trim() || "Uncategorized";
+}
+
 function colorForActivity(activity) {
-  const key = (activity || "Uncategorized").trim() || "Uncategorized";
+  const key = activityKey(activity);
   if (!activityColors.has(key)) {
     activityColors.set(key, ACTIVITY_PALETTE[activityColors.size % ACTIVITY_PALETTE.length]);
   }
@@ -384,7 +402,16 @@ async function loadData() {
     }
     everSeenAssignees = new Set(tasks.map(t => t.assignee));
 
+    if (selectedActivities === null) {
+      selectedActivities = uiState.activities ? new Set(uiState.activities) : new Set(tasks.map(t => activityKey(t.activity)));
+    } else {
+      const allActivities = new Set(tasks.map(t => activityKey(t.activity)));
+      allActivities.forEach(a => { if (!selectedActivities.has(a) && !everSeenActivities.has(a)) selectedActivities.add(a); });
+    }
+    everSeenActivities = new Set(tasks.map(t => activityKey(t.activity)));
+
     buildAssigneePanel();
+    buildActivityPanel();
     buildLegend();
     buildLanes();
     render();
@@ -395,6 +422,7 @@ async function loadData() {
   }
 }
 let everSeenAssignees = new Set();
+let everSeenActivities = new Set();
 
 /* ============================================================
    Legend (dynamic, by Activity)
@@ -446,7 +474,7 @@ document.addEventListener("click", (e) => {
 });
 document.getElementById("assignee-search").addEventListener("input", (e) => {
   const q = e.target.value.toLowerCase();
-  document.querySelectorAll(".assignee-row").forEach(row => {
+  document.querySelectorAll("#assignee-list .assignee-row").forEach(row => {
     row.style.display = row.dataset.name.includes(q) ? "flex" : "none";
   });
 });
@@ -467,12 +495,67 @@ function persistAssigneeSelection() {
 }
 
 /* ============================================================
+   Activity filter panel
+   ============================================================ */
+function buildActivityPanel() {
+  const list = document.getElementById("activity-list");
+  list.innerHTML = "";
+  const counts = new Map();
+  tasks.forEach(t => { const k = activityKey(t.activity); counts.set(k, (counts.get(k) || 0) + 1); });
+  const names = Array.from(counts.keys()).sort();
+  names.forEach((name) => {
+    const row = document.createElement("div");
+    row.className = "assignee-row";
+    row.dataset.name = name.toLowerCase();
+    const id = "act_" + name.replace(/[^a-z0-9]/gi, "_");
+    row.innerHTML = `<input type="checkbox" id="${id}" ${selectedActivities.has(name) ? "checked" : ""}>
+      <label for="${id}"><span class="dot" style="background:${colorForActivity(name)};"></span>${escapeHtml(name)} <span style="color:var(--muted);">(${counts.get(name)})</span></label>`;
+    row.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) selectedActivities.add(name); else selectedActivities.delete(name);
+      persistActivitySelection();
+      buildLanes(); render();
+    });
+    list.appendChild(row);
+  });
+}
+
+document.getElementById("btn-activity").addEventListener("click", () => {
+  document.getElementById("activity-panel").classList.toggle("open");
+});
+document.addEventListener("click", (e) => {
+  const filter = document.getElementById("activity-filter");
+  if (!filter.contains(e.target)) document.getElementById("activity-panel").classList.remove("open");
+});
+document.getElementById("activity-search").addEventListener("input", (e) => {
+  const q = e.target.value.toLowerCase();
+  document.querySelectorAll("#activity-list .assignee-row").forEach(row => {
+    row.style.display = row.dataset.name.includes(q) ? "flex" : "none";
+  });
+});
+document.getElementById("activity-all").addEventListener("click", () => {
+  selectedActivities = new Set(tasks.map(t => activityKey(t.activity)));
+  persistActivitySelection();
+  buildActivityPanel(); buildLanes(); render();
+});
+document.getElementById("activity-none").addEventListener("click", () => {
+  selectedActivities = new Set();
+  persistActivitySelection();
+  buildActivityPanel(); buildLanes(); render();
+});
+
+function persistActivitySelection() {
+  uiState.activities = Array.from(selectedActivities);
+  saveUiState();
+}
+
+/* ============================================================
    Lanes — one row per task, in priority order (earliest Start first)
    ============================================================ */
 function buildLanes() {
   const byAssignee = new Map();
   tasks.forEach((t, idx) => {
     if (!selectedAssignees.has(t.assignee)) return;
+    if (!selectedActivities.has(activityKey(t.activity))) return;
     if (!byAssignee.has(t.assignee)) byAssignee.set(t.assignee, []);
     byAssignee.get(t.assignee).push(idx);
   });
