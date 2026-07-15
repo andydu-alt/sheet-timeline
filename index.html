@@ -21,6 +21,7 @@
   #status.error{color:#dc2626;}
 
   #legend{display:flex;gap:10px;align-items:center;font-size:11.5px;color:var(--muted);padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  #legend.collapsed{display:none;}
   .dot{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:4px;flex-shrink:0;}
 
   #signin-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:70vh;gap:14px;text-align:center;padding:20px;}
@@ -39,8 +40,18 @@
 
   /* --- Single scrollable canvas: both axes on #timeline-wrap so the
      horizontal scrollbar is always visible within the viewport. --- */
-  #timeline-wrap{display:none;overflow:auto;height:calc(100vh - 90px);position:relative;}
+  #timeline-wrap{display:none;overflow:scroll;height:calc(100vh - 90px);position:relative;cursor:grab;}
+  #timeline-wrap.panning{cursor:grabbing;}
+  #timeline-wrap::-webkit-scrollbar{height:15px;width:15px;}
+  #timeline-wrap::-webkit-scrollbar-track{background:#e5e7eb;}
+  #timeline-wrap::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:8px;border:3px solid #e5e7eb;}
+  #timeline-wrap::-webkit-scrollbar-thumb:hover{background:#64748b;}
+  #timeline-wrap{scrollbar-width:auto;scrollbar-color:#94a3b8 #e5e7eb;}
   #grid{position:relative;}
+
+  .ext-label{position:absolute;height:26px;display:flex;align-items:center;font-size:11.5px;color:var(--text);white-space:nowrap;cursor:grab;user-select:none;pointer-events:auto;}
+  .ext-label b{margin-right:5px;}
+  .ext-label .ext-date{color:var(--muted);margin-left:5px;font-size:10.5px;}
 
   #month-header{position:sticky;top:0;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:34px;}
   #day-header{position:sticky;top:34px;z-index:20;display:flex;background:var(--panel);border-bottom:1px solid var(--border);height:22px;}
@@ -75,6 +86,7 @@
   <button id="btn-signin">Sign in with Google</button>
   <button id="btn-reload" style="display:none;">Reload from Sheet</button>
   <button id="btn-today" style="display:none;">Today</button>
+  <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
   <div id="assignee-filter" style="display:none;">
     <button id="btn-assignee">Assignees ▾</button>
     <div id="assignee-panel">
@@ -214,9 +226,42 @@ function onSignedIn() {
   document.getElementById("btn-today").style.display = "inline-block";
   document.getElementById("assignee-filter").style.display = "inline-block";
   document.getElementById("zoom").style.display = "inline-block";
+  document.getElementById("btn-legend-toggle").style.display = "inline-block";
   document.getElementById("legend").style.display = "flex";
   loadData();
 }
+
+document.getElementById("btn-legend-toggle").addEventListener("click", () => {
+  const legend = document.getElementById("legend");
+  const collapsed = legend.classList.toggle("collapsed");
+  document.getElementById("btn-legend-toggle").textContent = collapsed ? "Show legend" : "Hide legend";
+});
+
+/* ============================================================
+   Pan the view by dragging empty space (not a bar / label / control)
+   ============================================================ */
+(function setupPan() {
+  const wrap = document.getElementById("timeline-wrap");
+  let panning = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+  wrap.addEventListener("mousedown", (e) => {
+    if (e.target.closest(".bar") || e.target.closest(".ext-label") || e.target.closest(".lane-label")) return;
+    panning = true;
+    startX = e.clientX; startY = e.clientY;
+    startLeft = wrap.scrollLeft; startTop = wrap.scrollTop;
+    wrap.classList.add("panning");
+    e.preventDefault();
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!panning) return;
+    wrap.scrollLeft = startLeft - (e.clientX - startX);
+    wrap.scrollTop = startTop - (e.clientY - startY);
+  });
+  document.addEventListener("mouseup", () => {
+    if (!panning) return;
+    panning = false;
+    wrap.classList.remove("panning");
+  });
+})();
 
 /* ============================================================
    Data loading
@@ -497,18 +542,39 @@ function render() {
       const t = tasks[idx];
       const left = LABEL_W + dayOffset(t.start) * pxPerDay;
       const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
+      const top = y + t.subRow * ROW_H + 4;
       const bar = document.createElement("div");
       bar.className = "bar";
       bar.style.background = t.color;
       bar.style.left = left + "px";
-      bar.style.top = (y + t.subRow * ROW_H + 4) + "px";
+      bar.style.top = top + "px";
       bar.style.width = width + "px";
       bar.dataset.idx = idx;
-      bar.innerHTML = `<span class="bar-text">${escapeHtml(t.label)}</span>
-        <div class="handle left"></div><div class="handle right"></div>`;
-      attachDrag(bar, t);
+
+      // Too thin to hold its own text (typical at Quarter zoom) — keep the
+      // bar as a small colored marker at its true position/width, and put
+      // the label in a separate element floated just to its right, same
+      // idea as Google Sheets' native timeline view.
+      const estTextWidth = escapeHtml(t.label).length * 6.2 + 16;
+      const thin = width < Math.min(estTextWidth, 70);
+      let extLabel = null;
+      if (thin) {
+        bar.innerHTML = `<div class="handle left"></div><div class="handle right"></div>`;
+        extLabel = document.createElement("div");
+        extLabel.className = "ext-label";
+        extLabel.style.left = (left + width + 5) + "px";
+        extLabel.style.top = top + "px";
+        extLabel.innerHTML = `<b>${escapeHtml(t.label)}</b>${t.activity ? "• " + escapeHtml(t.activity) : ""}<span class="ext-date">${fmtDate(t.start)} - ${fmtDate(t.end)}</span>`;
+      } else {
+        bar.innerHTML = `<span class="bar-text">${escapeHtml(t.label)}</span>
+          <div class="handle left"></div><div class="handle right"></div>`;
+      }
+
+      attachDrag(bar, t, extLabel);
       attachTooltip(bar, t);
+      if (extLabel) attachTooltip(extLabel, t);
       body.appendChild(bar);
+      if (extLabel) body.appendChild(extLabel);
     });
 
     y += laneHeight;
@@ -557,12 +623,12 @@ function attachTooltip(bar, t) {
 /* ============================================================
    Drag & resize
    ============================================================ */
-function attachDrag(bar, t) {
+function attachDrag(bar, t, extLabel) {
   let mode = null; // 'move' | 'left' | 'right'
   let startX = 0;
   let origStart, origEnd;
 
-  bar.addEventListener("mousedown", (e) => {
+  const onMouseDown = (e) => {
     if (e.target.classList.contains("handle")) {
       mode = e.target.classList.contains("left") ? "left" : "right";
     } else {
@@ -574,7 +640,10 @@ function attachDrag(bar, t) {
     bar.classList.add("dragging");
     document.getElementById("tooltip").style.display = "none";
     e.preventDefault();
-  });
+    e.stopPropagation(); // don't also trigger canvas panning
+  };
+  bar.addEventListener("mousedown", onMouseDown);
+  if (extLabel) extLabel.addEventListener("mousedown", onMouseDown); // label-only drag = move
 
   document.addEventListener("mousemove", (e) => {
     if (!mode) return;
@@ -596,6 +665,7 @@ function attachDrag(bar, t) {
     const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
     bar.style.left = left + "px";
     bar.style.width = width + "px";
+    if (extLabel) extLabel.style.left = (left + width + 5) + "px";
   });
 
   document.addEventListener("mouseup", async () => {
