@@ -80,6 +80,21 @@
   .bar .handle.right{right:0;}
 
   #tooltip{position:fixed;background:#111827;color:#fff;font-size:12px;padding:8px 10px;border-radius:6px;pointer-events:none;z-index:100;max-width:320px;line-height:1.5;display:none;box-shadow:0 4px 12px rgba(0,0,0,.3);}
+
+  #task-modal-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;align-items:center;justify-content:center;}
+  #task-modal-backdrop.open{display:flex;}
+  #task-modal{background:#fff;border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,.3);width:420px;max-width:92vw;padding:20px;}
+  #task-modal h2{font-size:15px;margin:0 0 4px;}
+  #task-modal .sub{font-size:12px;color:var(--muted);margin-bottom:14px;}
+  #task-modal .row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--border);}
+  #task-modal .row span:first-child{color:var(--muted);}
+  #task-modal .field{margin-top:12px;}
+  #task-modal .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
+  #task-modal .field input{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:13px;}
+  #task-modal .preview{margin-top:14px;padding:10px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;font-size:12.5px;}
+  #task-modal .preview b{color:#0369a1;}
+  #task-modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
+  #task-modal .warn{margin-top:10px;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:8px 10px;border-radius:6px;}
 </style>
 </head>
 <body>
@@ -134,6 +149,31 @@
 </div>
 
 <div id="tooltip"></div>
+
+<div id="task-modal-backdrop">
+  <div id="task-modal">
+    <h2 id="tm-title">Task</h2>
+    <div class="sub" id="tm-sub"></div>
+    <div class="row"><span>Start</span><span id="tm-start">–</span></div>
+    <div class="row"><span>End</span><span id="tm-end">–</span></div>
+    <div class="row" id="tm-formula-row"><span>End formula</span><span id="tm-formula">–</span></div>
+    <div class="field">
+      <label for="tm-est">Estimate (man-days)</label>
+      <input type="number" id="tm-est" step="0.1" min="0">
+    </div>
+    <div class="field">
+      <label for="tm-workload">Workload (%)</label>
+      <input type="number" id="tm-workload" step="1" min="1" max="100">
+    </div>
+    <div class="preview" id="tm-preview" style="display:none;"></div>
+    <div class="warn" id="tm-warn" style="display:none;"></div>
+    <div class="actions">
+      <button id="tm-cancel">Close</button>
+      <button id="tm-recalc">Recalculate</button>
+      <button id="tm-apply" style="display:none;">Apply</button>
+    </div>
+  </div>
+</div>
 
 <script>
 /* ============================================================
@@ -486,6 +526,32 @@ function fmtDate(d) {
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
 }
 
+// Mirrors Google Sheets' WORKDAY(start_date, num_days, [holidays]): moves
+// num_days working days forward (or back, if negative) from start_date —
+// start_date itself is NOT counted, and fractional num_days is truncated.
+function excelWorkday(start, numDaysRaw) {
+  const numDays = Math.trunc(numDaysRaw);
+  const d = new Date(start);
+  let remaining = Math.abs(numDays);
+  const step = numDays >= 0 ? 1 : -1;
+  while (remaining > 0) {
+    d.setDate(d.getDate() + step);
+    if (isWorkingDay(d)) remaining--;
+  }
+  return d;
+}
+
+// Parses the specific pattern used in this sheet's End-date formula:
+//   =WORKDAY(<startCell>, <estCell>*100/<workload>, <holidaysRange>)
+// Returns { startRef, estRef, workload, holidaysArg } or null if the
+// formula doesn't match (in which case recalculation isn't offered).
+function parseWorkdayFormula(formula) {
+  if (!formula) return null;
+  const m = formula.match(/WORKDAY\(\s*([A-Z]+\d+)\s*,\s*([A-Z]+\d+)\s*\*\s*100\s*\/\s*([\d.]+)\s*,\s*(.+)\)\s*$/i);
+  if (!m) return null;
+  return { startRef: m[1], estRef: m[2], workload: parseFloat(m[3]), holidaysArg: m[4] };
+}
+
 function activityKey(activity) {
   return (activity || "Uncategorized").trim() || "Uncategorized";
 }
@@ -525,8 +591,12 @@ async function loadData() {
       if (start.getFullYear() < MIN_SANE_YEAR || end.getFullYear() < MIN_SANE_YEAR) { skippedSentinel++; return; }
       const activity = (row[C.ACTIVITY] || "").trim();
       const fRow = formulaRows[i] || [];
-      const startIsFormula = typeof fRow[C.START] === "string" && fRow[C.START].trim().startsWith("=");
-      const endIsFormula = typeof fRow[C.END] === "string" && fRow[C.END].trim().startsWith("=");
+      const startFormulaRaw = typeof fRow[C.START] === "string" ? fRow[C.START].trim() : "";
+      const endFormulaRaw = typeof fRow[C.END] === "string" ? fRow[C.END].trim() : "";
+      const startIsFormula = startFormulaRaw.startsWith("=");
+      const endIsFormula = endFormulaRaw.startsWith("=");
+      const estRaw = row[C.EST] || "";
+      const estNum = parseFloat(estRaw);
       tasks.push({
         rowNum: i + 2, // actual sheet row (1-based, +1 for header)
         assignee,
@@ -536,12 +606,15 @@ async function loadData() {
         taskName: row[C.TASKS] || "",
         activity,
         start, end,
-        est: row[C.EST] || "",
+        est: estRaw,
+        estNum: isNaN(estNum) ? null : estNum,
         status: row[C.STATUS] || "",
         label: (row[C.FEATURE] || row[C.TASKS] || row[C.ACTIVITY] || "Task"),
         color: colorForActivity(activity),
         startIsFormula,
         endIsFormula,
+        startFormulaRaw,
+        endFormulaRaw,
       });
     });
 
@@ -915,6 +988,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   let origStart, origEnd, origWorkDays;
   let deltaRows = 0;
   let preDragSnapshot = null;
+  let lastClientX = 0, lastClientY = 0;
 
   const onMouseDown = (e) => {
     if (e.target.classList.contains("handle")) {
@@ -928,6 +1002,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     origEnd = new Date(t.end);
     origWorkDays = countWorkingDays(origStart, origEnd);
     deltaRows = 0;
+    lastClientX = e.clientX; lastClientY = e.clientY;
     preDragSnapshot = snapshotState();
     bar.classList.add("dragging");
     if (mode === "move") bar.style.zIndex = 40;
@@ -940,6 +1015,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
 
   document.addEventListener("mousemove", (e) => {
     if (!mode) return;
+    lastClientX = e.clientX; lastClientY = e.clientY;
     const deltaPx = e.clientX - startX;
     const deltaDays = Math.round(deltaPx / pxPerDay);
     let newStart = new Date(origStart), newEnd = new Date(origEnd);
@@ -981,6 +1057,18 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     if (!mode) return;
     bar.classList.remove("dragging");
     bar.style.zIndex = "";
+
+    // A plain click (negligible movement) on the bar body opens the
+    // estimate/workload recalculation dialog instead of being treated as a drag.
+    const totalMove = Math.hypot(lastClientX - startX, lastClientY - startY);
+    if (mode === "move" && totalMove < 4) {
+      mode = null;
+      t.start = new Date(origStart); t.end = new Date(origEnd); // discard any sub-pixel jitter
+      render();
+      openTaskModal(t);
+      return;
+    }
+
     const wasMove = mode === "move";
     const wasRight = mode === "right";
     const changed = t.start.getTime() !== origStart.getTime() || t.end.getTime() !== origEnd.getTime();
@@ -1106,6 +1194,135 @@ async function saveChangedFields(t, origStart, origEnd, force) {
   if (startChanged && (force === "start" || !t.startIsFormula)) await saveField(t, "start");
   if (endChanged && (force === "end" || !t.endIsFormula)) await saveField(t, "end");
 }
+
+/* ============================================================
+   Task detail / recalculate modal — click a bar (without dragging) to
+   open it. Shows current Estimate + Workload (parsed from the End
+   formula, e.g. =WORKDAY(G538,I538*100/30,Holidays!$B$2:$B)) and lets
+   you edit either, previewing the recalculated End date before applying.
+   ============================================================ */
+let modalTask = null;
+
+function openTaskModal(t) {
+  modalTask = t;
+  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+
+  document.getElementById("tm-title").textContent = t.label;
+  document.getElementById("tm-sub").textContent = `${t.assignee}${t.activity ? " • " + t.activity : ""}`;
+  document.getElementById("tm-start").textContent = fmtDate(t.start);
+  document.getElementById("tm-end").textContent = fmtDate(t.end);
+  document.getElementById("tm-formula").textContent = t.endFormulaRaw || "(none — plain date)";
+  document.getElementById("tm-preview").style.display = "none";
+
+  const estInput = document.getElementById("tm-est");
+  const workloadInput = document.getElementById("tm-workload");
+  const warn = document.getElementById("tm-warn");
+  const recalcBtn = document.getElementById("tm-recalc");
+  const applyBtn = document.getElementById("tm-apply");
+
+  estInput.value = t.estNum !== null ? t.estNum : "";
+  applyBtn.style.display = "none";
+
+  if (parsed) {
+    warn.style.display = "none";
+    workloadInput.value = parsed.workload;
+    workloadInput.disabled = false;
+    recalcBtn.disabled = false;
+  } else {
+    warn.style.display = "block";
+    warn.textContent = "This task's End date doesn't use the standard WORKDAY(Start, Estimate*100/Workload, Holidays) formula, so recalculation isn't available here — edit it directly in the sheet.";
+    workloadInput.value = "";
+    workloadInput.disabled = true;
+    recalcBtn.disabled = true;
+  }
+
+  document.getElementById("task-modal-backdrop").classList.add("open");
+}
+
+function closeTaskModal() {
+  document.getElementById("task-modal-backdrop").classList.remove("open");
+  modalTask = null;
+}
+
+document.getElementById("tm-cancel").addEventListener("click", closeTaskModal);
+document.getElementById("task-modal-backdrop").addEventListener("click", (e) => {
+  if (e.target.id === "task-modal-backdrop") closeTaskModal();
+});
+
+document.getElementById("tm-recalc").addEventListener("click", () => {
+  if (!modalTask) return;
+  const t = modalTask;
+  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+  if (!parsed) return;
+  const est = parseFloat(document.getElementById("tm-est").value);
+  const workload = parseFloat(document.getElementById("tm-workload").value);
+  const preview = document.getElementById("tm-preview");
+  if (isNaN(est) || isNaN(workload) || workload <= 0) {
+    preview.style.display = "block";
+    preview.innerHTML = `Enter a valid estimate and a workload > 0%.`;
+    document.getElementById("tm-apply").style.display = "none";
+    return;
+  }
+  const workDaysNeeded = est * 100 / workload;
+  const newEnd = excelWorkday(t.start, workDaysNeeded);
+  preview.style.display = "block";
+  preview.innerHTML = `${Math.trunc(workDaysNeeded)} elapsed workday(s) at ${workload}% workload → new End: <b>${fmtDate(newEnd)}</b> (was ${fmtDate(t.end)})`;
+  document.getElementById("tm-apply").style.display = "inline-block";
+  document.getElementById("tm-apply").dataset.newEnd = newEnd.getTime();
+  document.getElementById("tm-apply").dataset.newEst = est;
+  document.getElementById("tm-apply").dataset.newWorkload = workload;
+});
+
+document.getElementById("tm-apply").addEventListener("click", async () => {
+  if (!modalTask) return;
+  const t = modalTask;
+  const applyBtn = document.getElementById("tm-apply");
+  const newEnd = new Date(parseInt(applyBtn.dataset.newEnd, 10));
+  const newEst = parseFloat(applyBtn.dataset.newEst);
+  const newWorkload = parseFloat(applyBtn.dataset.newWorkload);
+  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+
+  commitUndoPoint(snapshotState());
+  const origEnd = new Date(t.end);
+  t.end = newEnd;
+
+  setStatus(`Saving row ${t.rowNum} (estimate/workload)…`, false, true);
+  try {
+    // Estimate is a plain value cell — write it if changed.
+    if (t.estNum !== newEst) {
+      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!I${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
+        method: "PUT",
+        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!I${t.rowNum}`, majorDimension: "ROWS", values: [[String(newEst)]] }),
+      });
+      t.est = String(newEst);
+      t.estNum = newEst;
+    }
+    // Rewrite the End formula with the new workload constant — stays a
+    // real formula (still starts with "="), so it keeps recalculating
+    // itself (and cascading to any dependent Start) going forward.
+    if (parsed && newWorkload !== parsed.workload) {
+      const newFormula = `=WORKDAY(${parsed.startRef},${parsed.estRef}*100/${newWorkload},${parsed.holidaysArg})`;
+      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!H${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
+        method: "PUT",
+        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!H${t.rowNum}`, majorDimension: "ROWS", values: [[newFormula]] }),
+      });
+      t.endFormulaRaw = newFormula;
+      t.endIsFormula = true;
+    } else if (parsed) {
+      // Workload unchanged but Estimate changed — the existing formula
+      // will recompute End on its own; nothing to write to H.
+    }
+    setStatus(`Saved row ${t.rowNum}: End → ${fmtDate(t.end)} · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Save failed — reload to resync: " + err.message, true);
+    t.end = origEnd;
+  }
+
+  buildLanes();
+  render();
+  closeTaskModal();
+});
 
 /* ============================================================
    Boot
