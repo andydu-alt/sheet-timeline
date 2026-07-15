@@ -66,7 +66,8 @@
   .corner.corner-day{height:22px;}
   .month-cell{position:absolute;top:0;height:34px;border-right:1px solid var(--border);font-size:12px;font-weight:600;padding:8px 0 0 6px;color:var(--text);white-space:nowrap;overflow:hidden;}
   .day-cell{position:absolute;top:0;height:22px;border-right:1px solid #eee;font-size:10px;color:var(--muted);text-align:center;line-height:22px;}
-  .day-cell.weekend{background:#f7f7f8;}
+  .day-cell.week-start{border-left:2px solid #d1d5db;}
+  .week-line{position:absolute;top:0;bottom:0;width:1px;background:#e5e7eb;z-index:0;}
 
   #body-row{position:relative;}
   .lane-bg{position:absolute;left:0;right:0;border-bottom:1px solid var(--border);}
@@ -207,6 +208,8 @@ let tokenExpiryMs = 0;
 let tasks = [];        // parsed task rows
 let lanes = [];         // { name, idxs: [taskIndices...], subRowCount }
 let minDate, maxDate;
+let workdayList = [];       // Date[] — every working day (no weekends/holidays) from minDate..maxDate, in order
+let workdayIndexMap = new Map(); // dateKey -> index into workdayList, used to compress weekends out of the grid
 let pxPerDay = 24; // overridden from saved uiState.zoom once the DOM is ready, see boot below
 const ROW_H = 34;
 const DAY_MS = 86400000;
@@ -425,12 +428,12 @@ document.getElementById("btn-reload").addEventListener("click", loadData);
 
 document.getElementById("btn-today").addEventListener("click", jumpToToday);
 
-function jumpToToday() {
+function jumpToToday(instant) {
   if (!minDate) return;
   const wrap = document.getElementById("timeline-wrap");
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const todayX = LABEL_W + dayOffset(today) * pxPerDay;
-  wrap.scrollTo({ left: Math.max(0, todayX - wrap.clientWidth / 2), behavior: "smooth" });
+  wrap.scrollTo({ left: Math.max(0, todayX - wrap.clientWidth / 2), behavior: instant ? "auto" : "smooth" });
 }
 
 document.getElementById("zoom").addEventListener("change", (e) => {
@@ -651,6 +654,7 @@ async function loadData() {
     buildLegend();
     buildLanes();
     render();
+    requestAnimationFrame(() => jumpToToday(true)); // land on Today by default, no click needed
     setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
@@ -816,15 +820,45 @@ function buildLanes() {
 
   if (!tasks.length) return;
   const visibleTasks = lanes.flatMap(l => l.idxs).map(i => tasks[i]);
-  if (!visibleTasks.length) { minDate = new Date(); maxDate = new Date(); maxDate.setDate(maxDate.getDate() + 30); return; }
+  if (!visibleTasks.length) { minDate = new Date(); maxDate = new Date(); maxDate.setDate(maxDate.getDate() + 30); buildWorkdayIndex(); return; }
   minDate = new Date(Math.min(...visibleTasks.map(t => t.start.getTime())));
   maxDate = new Date(Math.max(...visibleTasks.map(t => t.end.getTime())));
   minDate.setDate(minDate.getDate() - 7);
   maxDate.setDate(maxDate.getDate() + 14);
+  buildWorkdayIndex();
 }
 
+// Weekends (and holidays) are compressed out of the grid entirely — Friday
+// is immediately followed by Monday with no gap — since an empty weekend
+// column reads as visual noise rather than useful information here.
+function buildWorkdayIndex() {
+  workdayList = [];
+  workdayIndexMap = new Map();
+  const d = new Date(minDate);
+  while (d <= maxDate) {
+    if (isWorkingDay(d)) {
+      workdayIndexMap.set(dateKey(d), workdayList.length);
+      workdayList.push(new Date(d));
+    }
+    d.setDate(d.getDate() + 1);
+  }
+}
+
+// Returns the column index for a date. Start/End dates are always snapped
+// to working days already, so the exact lookup hits; the nearest-neighbor
+// fallback only matters for display-only dates like "today" landing on a
+// weekend/holiday.
 function dayOffset(d) {
-  return Math.round((d - minDate) / DAY_MS);
+  const key = dateKey(d);
+  if (workdayIndexMap.has(key)) return workdayIndexMap.get(key);
+  let before = new Date(d), after = new Date(d);
+  for (let i = 0; i < 14; i++) {
+    before.setDate(before.getDate() - 1);
+    if (workdayIndexMap.has(dateKey(before))) return workdayIndexMap.get(dateKey(before));
+    after.setDate(after.getDate() + 1);
+    if (workdayIndexMap.has(dateKey(after))) return workdayIndexMap.get(dateKey(after));
+  }
+  return 0;
 }
 
 /* ============================================================
@@ -835,7 +869,7 @@ function render() {
   grid.innerHTML = "";
   if (!lanes.length) { grid.style.width = "100%"; grid.style.height = "200px"; grid.textContent = "No tasks match the current assignee filter."; return; }
 
-  const totalDays = dayOffset(maxDate) + 1;
+  const totalDays = workdayList.length;
   const gridWidth = totalDays * pxPerDay;
   const fullWidth = LABEL_W + gridWidth;
 
@@ -873,16 +907,15 @@ function render() {
   const dayCorner = document.createElement("div");
   dayCorner.className = "corner corner-day";
   dayHeader.appendChild(dayCorner);
-  for (let d = 0; d < totalDays; d++) {
-    const date = new Date(minDate.getTime() + d * DAY_MS);
+  workdayList.forEach((date, d) => {
     const cell = document.createElement("div");
-    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-    cell.className = "day-cell" + (isWeekend ? " weekend" : "");
+    const isMonday = date.getDay() === 1;
+    cell.className = "day-cell" + (isMonday ? " week-start" : "");
     cell.style.left = (LABEL_W + d * pxPerDay) + "px";
     cell.style.width = pxPerDay + "px";
     if (pxPerDay >= 20) cell.textContent = date.getDate();
     dayHeader.appendChild(cell);
-  }
+  });
   grid.appendChild(dayHeader);
 
   // Body
@@ -943,6 +976,17 @@ function render() {
 
   const totalHeight = y;
 
+  // Weekends no longer create a visual gap, so mark each Monday with a
+  // faint full-height guide line to keep weeks easy to tell apart.
+  workdayList.forEach((date, d) => {
+    if (date.getDay() !== 1) return;
+    const line = document.createElement("div");
+    line.className = "week-line";
+    line.style.left = (LABEL_W + d * pxPerDay) + "px";
+    line.style.height = totalHeight + "px";
+    body.appendChild(line);
+  });
+
   if (todayX >= LABEL_W) {
     const line = document.createElement("div");
     line.className = "today-line";
@@ -994,7 +1038,7 @@ function attachTooltip(bar, t) {
 function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   let mode = null; // 'move' | 'left' | 'right'
   let startX = 0, startY = 0;
-  let origStart, origEnd, origWorkDays;
+  let origStart, origEnd, origStartIdx, origEndIdx, origWorkDays;
   let deltaRows = 0;
   let preDragSnapshot = null;
   let lastClientX = 0, lastClientY = 0;
@@ -1009,7 +1053,9 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     startY = e.clientY;
     origStart = new Date(t.start);
     origEnd = new Date(t.end);
-    origWorkDays = countWorkingDays(origStart, origEnd);
+    origStartIdx = dayOffset(origStart);
+    origEndIdx = dayOffset(origEnd);
+    origWorkDays = origEndIdx - origStartIdx + 1;
     deltaRows = 0;
     lastClientX = e.clientX; lastClientY = e.clientY;
     preDragSnapshot = snapshotState();
@@ -1026,26 +1072,24 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     if (!mode) return;
     lastClientX = e.clientX; lastClientY = e.clientY;
     const deltaPx = e.clientX - startX;
-    const deltaDays = Math.round(deltaPx / pxPerDay);
-    let newStart = new Date(origStart), newEnd = new Date(origEnd);
+    // Since weekends/holidays are compressed out of the grid, each pixel
+    // column IS a working day — so the drag delta maps directly to an
+    // index step in workdayList, never landing on a non-working day.
+    const deltaCols = Math.round(deltaPx / pxPerDay);
+    const lastIdx = workdayList.length - 1;
+    let newStart = origStart, newEnd = origEnd;
     if (mode === "move") {
-      newStart.setDate(newStart.getDate() + deltaDays);
-      // Snap the start to the next working day, then re-apply the task's
-      // original WORKING-day duration (not calendar days) — a 2-workday
-      // task that spans a weekend (e.g. Fri-Mon = 4 calendar days) stays
-      // 2 workdays wherever it's dropped, even across another weekend/holiday.
-      newStart = snapForwardToWorkingDay(newStart);
-      newEnd = addWorkingDaysInclusive(newStart, origWorkDays);
+      const newStartIdx = Math.max(0, Math.min(lastIdx, origStartIdx + deltaCols));
+      newStart = workdayList[newStartIdx];
+      newEnd = workdayList[Math.max(0, Math.min(lastIdx, newStartIdx + origWorkDays - 1))];
     } else if (mode === "left") {
-      newStart.setDate(newStart.getDate() + deltaDays);
-      newStart = snapForwardToWorkingDay(newStart);
-      if (newStart > origEnd) newStart = new Date(origEnd);
+      const newStartIdx = Math.max(0, Math.min(origEndIdx, origStartIdx + deltaCols));
+      newStart = workdayList[newStartIdx];
     } else if (mode === "right") {
-      newEnd.setDate(newEnd.getDate() + deltaDays);
-      newEnd = snapForwardToWorkingDay(newEnd);
-      if (newEnd < origStart) newEnd = new Date(origStart);
+      const newEndIdx = Math.max(origStartIdx, Math.min(lastIdx, origEndIdx + deltaCols));
+      newEnd = workdayList[newEndIdx];
     }
-    t.start = newStart; t.end = newEnd;
+    t.start = new Date(newStart); t.end = new Date(newEnd);
     const left = LABEL_W + dayOffset(t.start) * pxPerDay;
     const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
     bar.style.left = left + "px";
@@ -1103,20 +1147,20 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     if ((wasMove || wasRight) && endChanged && lane) {
       const chain = findDependencyChain(t, lane, origEnd);
       if (chain.length) {
-        const shiftDays = Math.round((t.end.getTime() - origEnd.getTime()) / DAY_MS);
-        const verb = shiftDays > 0 ? "later" : "earlier";
+        const shiftCols = dayOffset(t.end) - origEndIdx; // workday columns, not calendar days
+        const verb = shiftCols > 0 ? "later" : "earlier";
         const ok = window.confirm(
-          `${Math.abs(shiftDays)} day(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount to keep the dependency intact?`
+          `${Math.abs(shiftCols)} workday(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount to keep the dependency intact?`
         );
         if (ok) {
+          const lastIdx = workdayList.length - 1;
           chain.forEach((dep) => {
             const depOrigStart = new Date(dep.start), depOrigEnd = new Date(dep.end);
-            const depWorkDays = countWorkingDays(dep.start, dep.end);
-            let newDepStart = new Date(dep.start);
-            newDepStart.setDate(newDepStart.getDate() + shiftDays);
-            newDepStart = snapForwardToWorkingDay(newDepStart);
-            dep.start = newDepStart;
-            dep.end = addWorkingDaysInclusive(newDepStart, depWorkDays);
+            const depStartIdx = dayOffset(dep.start);
+            const depWorkDays = dayOffset(dep.end) - depStartIdx + 1;
+            const newDepStartIdx = Math.max(0, Math.min(lastIdx, depStartIdx + shiftCols));
+            dep.start = new Date(workdayList[newDepStartIdx]);
+            dep.end = new Date(workdayList[Math.max(0, Math.min(lastIdx, newDepStartIdx + depWorkDays - 1))]);
             chainShifted.push({ t: dep, origStart: depOrigStart, origEnd: depOrigEnd });
           });
         }
@@ -1158,7 +1202,7 @@ function findDependencyChain(anchorTask, lane, anchorOrigEnd) {
     found = false;
     for (const cand of candidates) {
       if (used.has(cand)) continue;
-      if (cand.start.getTime() === cursorEnd.getTime() + DAY_MS) {
+      if (dayOffset(cand.start) === dayOffset(cursorEnd) + 1) {
         chain.push(cand);
         used.add(cand);
         cursorEnd = cand.end;
