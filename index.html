@@ -1113,8 +1113,10 @@ function render() {
   body.style.width = fullWidth + "px";
 
   let y = 0;
-  const today = new Date(); today.setHours(0,0,0,0);
-  const todayX = LABEL_W + dayOffset(today) * pxPerDay;
+  const now = new Date();
+  const today = new Date(now); today.setHours(0,0,0,0);
+  const dayFraction = (now - today) / 86400000;
+  const todayX = LABEL_W + (dayOffset(today) + dayFraction) * pxPerDay;
 
   laneScrollRanges = [];
   lanes.forEach((lane) => {
@@ -1808,6 +1810,10 @@ window.addEventListener("load", () => {
     }
   }, 100);
 });
+
+// Keep the today-line creeping forward through the day instead of
+// only updating on the next full data reload.
+setInterval(() => { if (lanes.length) render(); }, 60000);
 </script>
 </body>
 </html>
