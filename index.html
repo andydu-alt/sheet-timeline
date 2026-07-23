@@ -248,8 +248,10 @@
   <div id="task-modal">
     <h2 id="tm-title">Task</h2>
     <div class="sub" id="tm-sub"></div>
+    <div class="row" id="tm-jira-row" style="display:none;"><span>Jira</span><span id="tm-jira">–</span></div>
     <div class="row"><span>Start</span><span id="tm-start">–</span></div>
     <div class="row"><span>End</span><span id="tm-end">–</span></div>
+    <div class="row" id="tm-start-formula-row"><span>Start formula</span><span id="tm-start-formula">–</span></div>
     <div class="row" id="tm-formula-row"><span>End formula</span><span id="tm-formula">–</span></div>
     <div class="field">
       <label for="tm-est">Estimate (man-days)</label>
@@ -265,6 +267,13 @@
       <button id="tm-cancel">Close</button>
       <button id="tm-recalc">Recalculate</button>
       <button id="tm-apply" style="display:none;">Apply</button>
+    </div>
+    <div class="field" id="tm-start-section" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">
+      <label>Start formula — chain to the task above (previous priority row)</label>
+      <div class="preview" id="tm-start-preview" style="display:none;"></div>
+      <div class="actions" style="margin-top:12px;">
+        <button id="tm-chain-start">Chain Start to previous task</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1259,6 +1268,17 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
 
+// Builds a clickable Jira URL from whatever's in the JIRA column: a full
+// http(s) URL is used as-is; otherwise the first issue key (e.g. NJM-1234)
+// is turned into a jira.nakivo.com browse link. Returns null if neither.
+function jiraUrl(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  const m = s.match(/[A-Z][A-Z0-9]+-\d+/);
+  return m ? `http://jira.nakivo.com/browse/${m[0]}` : null;
+}
+
 /* ============================================================
    Tooltip
    ============================================================ */
@@ -1684,10 +1704,24 @@ function openTaskModal(t) {
 
   document.getElementById("tm-title").textContent = t.label;
   document.getElementById("tm-sub").textContent = `${t.assignee}${t.activity ? " • " + t.activity : ""}`;
+
+  // Jira link — clickable, opens in a new tab. Hidden if the row has no Jira.
+  const jiraRow = document.getElementById("tm-jira-row");
+  const jiraCell = document.getElementById("tm-jira");
+  const url = jiraUrl(t.jira);
+  if (url) {
+    jiraRow.style.display = "flex";
+    jiraCell.innerHTML = `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" style="color:var(--accent);">${escapeHtml(t.jira)} ↗</a>`;
+  } else {
+    jiraRow.style.display = "none";
+  }
+
   document.getElementById("tm-start").textContent = fmtDate(t.start);
   document.getElementById("tm-end").textContent = fmtDate(t.end);
+  document.getElementById("tm-start-formula").textContent = t.startFormulaRaw || "(none — plain date)";
   document.getElementById("tm-formula").textContent = t.endFormulaRaw || "(none — plain date)";
   document.getElementById("tm-preview").style.display = "none";
+  document.getElementById("tm-start-preview").style.display = "none";
 
   const estInput = document.getElementById("tm-est");
   const workloadInput = document.getElementById("tm-workload");
@@ -1698,17 +1732,19 @@ function openTaskModal(t) {
   estInput.value = t.estNum !== null ? t.estNum : "";
   applyBtn.style.display = "none";
 
+  // Workload is now always editable. If the End cell isn't yet a standard
+  // WORKDAY formula, we prefill a sensible default and warn that Applying
+  // will WRITE the formula to the cell (converting a plain date into a
+  // formula-driven End) rather than blocking recalculation.
+  workloadInput.disabled = false;
+  recalcBtn.disabled = false;
   if (parsed) {
     warn.style.display = "none";
     workloadInput.value = parsed.workload;
-    workloadInput.disabled = false;
-    recalcBtn.disabled = false;
   } else {
     warn.style.display = "block";
-    warn.textContent = "This task's End date doesn't use the standard WORKDAY(Start, Estimate*100/Workload, Holidays) formula, so recalculation isn't available here — edit it directly in the sheet.";
-    workloadInput.value = "";
-    workloadInput.disabled = true;
-    recalcBtn.disabled = true;
+    warn.textContent = "This task's End date isn't a WORKDAY(Start, Estimate*100/Workload, Holidays) formula yet. Enter a workload and Apply — the formula will be written to the End cell.";
+    workloadInput.value = 100;
   }
 
   document.getElementById("task-modal-backdrop").classList.add("open");
@@ -1727,8 +1763,6 @@ document.getElementById("task-modal-backdrop").addEventListener("click", (e) => 
 document.getElementById("tm-recalc").addEventListener("click", () => {
   if (!modalTask) return;
   const t = modalTask;
-  const parsed = parseWorkdayFormula(t.endFormulaRaw);
-  if (!parsed) return;
   const est = parseFloat(document.getElementById("tm-est").value);
   const workload = parseFloat(document.getElementById("tm-workload").value);
   const preview = document.getElementById("tm-preview");
@@ -1772,10 +1806,20 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
       t.est = String(newEst);
       t.estNum = newEst;
     }
-    // Rewrite the End formula with the new workload constant — stays a
-    // real formula (still starts with "="), so it keeps recalculating
-    // itself (and cascading to any dependent Start) going forward.
-    if (parsed && newWorkload !== parsed.workload) {
+    // Ensure the End cell holds a WORKDAY(Start, Estimate*100/Workload,
+    // Holidays) formula. If one already exists we only rewrite it when the
+    // workload changed (otherwise the existing formula recomputes on its
+    // own from the Estimate). If the cell was a plain date, we write the
+    // formula now — converting it into a formula-driven End going forward.
+    if (!parsed) {
+      const newFormula = `=WORKDAY(G${t.rowNum},I${t.rowNum}*100/${newWorkload},Holidays!$B$2:$B)`;
+      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!H${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
+        method: "PUT",
+        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!H${t.rowNum}`, majorDimension: "ROWS", values: [[newFormula]] }),
+      });
+      t.endFormulaRaw = newFormula;
+      t.endIsFormula = true;
+    } else if (newWorkload !== parsed.workload) {
       const newFormula = `=WORKDAY(${parsed.startRef},${parsed.estRef}*100/${newWorkload},${parsed.holidaysArg})`;
       await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!H${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
         method: "PUT",
@@ -1783,10 +1827,9 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
       });
       t.endFormulaRaw = newFormula;
       t.endIsFormula = true;
-    } else if (parsed) {
-      // Workload unchanged but Estimate changed — the existing formula
-      // will recompute End on its own; nothing to write to H.
     }
+    // else: workload unchanged and a formula already exists — the existing
+    // End formula recomputes itself from the (possibly new) Estimate.
     setStatus(`Saved row ${t.rowNum}: End → ${fmtDate(t.end)} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
@@ -1797,6 +1840,50 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
   buildLanes();
   render();
   closeTaskModal();
+});
+
+// Chain this task's Start to the task immediately above it (previous
+// priority row for the same assignee) by writing the standard
+// =WORKDAY(H<prevRow>,1,Holidays!$B$2:$B) formula to the Start cell. If the
+// End is a WORKDAY formula it then recomputes off the new Start on its own.
+document.getElementById("tm-chain-start").addEventListener("click", async () => {
+  if (!modalTask) return;
+  const t = modalTask;
+  const preview = document.getElementById("tm-start-preview");
+  preview.style.display = "block";
+
+  const list = orderedTasksByAssignee().get(t.assignee) || [];
+  const pos = list.findIndex(x => x.rowNum === t.rowNum);
+  if (pos <= 0) {
+    preview.innerHTML = "This is the first task for this assignee — there is no previous task to chain to.";
+    return;
+  }
+  const prev = list[pos - 1];
+  const newStart = excelWorkday(prev.end, 1);
+  const formula = `=WORKDAY(H${prev.rowNum},1,Holidays!$B$2:$B)`;
+
+  commitUndoPoint(snapshotState());
+  const origStart = new Date(t.start), origEnd = new Date(t.end);
+  setStatus(`Saving row ${t.rowNum} (Start formula)…`, false, true);
+  try {
+    await writeFormula(t, "start", formula);
+    t.start = newStart;
+    // If End is a standard WORKDAY formula, it recomputes off the new Start.
+    const parsedEnd = parseWorkdayFormula(t.endFormulaRaw);
+    if (parsedEnd) t.end = excelWorkday(t.start, (t.estNum || 0) * 100 / parsedEnd.workload);
+    preview.innerHTML = `Start chained to "${escapeHtml(prev.label)}" (row ${prev.rowNum}) → new Start: <b>${fmtDate(t.start)}</b>`;
+    document.getElementById("tm-start-formula").textContent = t.startFormulaRaw;
+    document.getElementById("tm-start").textContent = fmtDate(t.start);
+    document.getElementById("tm-end").textContent = fmtDate(t.end);
+    setStatus(`Saved row ${t.rowNum}: Start → ${fmtDate(t.start)} · ${new Date().toLocaleTimeString()}`);
+    buildLanes();
+    render();
+  } catch (err) {
+    console.error(err);
+    setStatus("Save failed — reload to resync: " + err.message, true);
+    t.start = origStart; t.end = origEnd;
+    preview.innerHTML = "Save failed — " + escapeHtml(err.message);
+  }
 });
 
 /* ============================================================
