@@ -383,7 +383,21 @@ let redoStack = [];
 
 function snapshotState() {
   return {
-    dates: tasks.map(t => ({ rowNum: t.rowNum, start: t.start.getTime(), end: t.end.getTime() })),
+    // Captures the full editable state of each row — not just dates but the
+    // Estimate and the Start/End formulas too — so undo/redo restores exactly
+    // what the modal reads (estimate/workload) and re-writes the right cell
+    // contents (literal date vs. WORKDAY formula) back to the sheet.
+    dates: tasks.map(t => ({
+      rowNum: t.rowNum,
+      start: t.start.getTime(),
+      end: t.end.getTime(),
+      est: t.est,
+      estNum: t.estNum,
+      startFormulaRaw: t.startFormulaRaw,
+      startIsFormula: t.startIsFormula,
+      endFormulaRaw: t.endFormulaRaw,
+      endIsFormula: t.endIsFormula,
+    })),
     manualOrder: JSON.parse(JSON.stringify(manualOrder)),
   };
 }
@@ -397,22 +411,62 @@ function commitUndoPoint(preSnapshot) {
 
 async function applySnapshot(snapshot) {
   const byRow = new Map(snapshot.dates.map(d => [d.rowNum, d]));
-  const changedRows = []; // { t, origStart, origEnd }
+  const writes = []; // { t, fields:Set } — which cells to re-write to the sheet
   tasks.forEach((t) => {
     const d = byRow.get(t.rowNum);
     if (!d) return;
-    if (t.start.getTime() !== d.start || t.end.getTime() !== d.end) {
-      const origStart = new Date(t.start), origEnd = new Date(t.end);
-      t.start = new Date(d.start);
-      t.end = new Date(d.end);
-      changedRows.push({ t, origStart, origEnd });
-    }
+    const startChanged = t.start.getTime() !== d.start ||
+      (t.startFormulaRaw || "") !== (d.startFormulaRaw || "") || t.startIsFormula !== d.startIsFormula;
+    const endChanged = t.end.getTime() !== d.end ||
+      (t.endFormulaRaw || "") !== (d.endFormulaRaw || "") || t.endIsFormula !== d.endIsFormula;
+    const estChanged = t.estNum !== d.estNum || (t.est || "") !== (d.est || "");
+    if (!startChanged && !endChanged && !estChanged) return;
+
+    // Restore the in-memory state so the modal + bars reflect the undone value.
+    t.start = new Date(d.start);
+    t.end = new Date(d.end);
+    t.est = d.est;
+    t.estNum = d.estNum;
+    t.startFormulaRaw = d.startFormulaRaw;
+    t.startIsFormula = d.startIsFormula;
+    t.endFormulaRaw = d.endFormulaRaw;
+    t.endIsFormula = d.endIsFormula;
+
+    const fields = new Set();
+    if (startChanged) fields.add("start");
+    if (endChanged) fields.add("end");
+    if (estChanged) fields.add("est");
+    writes.push({ t, fields });
   });
   manualOrder = snapshot.manualOrder;
   localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
   buildLanes();
   render();
-  for (const { t, origStart, origEnd } of changedRows) await saveChangedFields(t, origStart, origEnd);
+  for (const { t, fields } of writes) {
+    for (const field of fields) await restoreCell(t, field);
+  }
+}
+
+// Writes one cell back to the exact snapshot content: a formula field is
+// restored as its formula string (so it keeps cascading), a plain-date field
+// as the literal date, and Estimate as its numeric value.
+async function restoreCell(t, field) {
+  let col, value;
+  if (field === "start") { col = "G"; value = t.startIsFormula && t.startFormulaRaw ? t.startFormulaRaw : fmtDate(t.start); }
+  else if (field === "end") { col = "H"; value = t.endIsFormula && t.endFormulaRaw ? t.endFormulaRaw : fmtDate(t.end); }
+  else { col = "I"; value = t.estNum !== null && t.estNum !== undefined ? String(t.estNum) : (t.est || ""); }
+  const range = `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`;
+  setStatus(`Restoring row ${t.rowNum} (${field})…`, false, true);
+  try {
+    await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
+      method: "PUT",
+      body: JSON.stringify({ range, majorDimension: "ROWS", values: [[value]] }),
+    });
+    setStatus(`Restored row ${t.rowNum} ${field} · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Restore failed — reload to resync: " + err.message, true);
+  }
 }
 
 async function undo() {
@@ -1831,6 +1885,40 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
     // else: workload unchanged and a formula already exists — the existing
     // End formula recomputes itself from the (possibly new) Estimate.
     setStatus(`Saved row ${t.rowNum}: End → ${fmtDate(t.end)} · ${new Date().toLocaleTimeString()}`);
+
+    // Waterfall cascade — same prompt as dragging a task's End: if this
+    // task's End moved and downstream tasks in the same lane are chained to
+    // start right after it, offer to shift them by the same amount so the
+    // dependency stays intact.
+    const endMoved = t.end.getTime() !== origEnd.getTime();
+    if (endMoved) {
+      const lane = lanes.find(l => l.idxs.some(ix => tasks[ix] === t));
+      if (lane) {
+        const chain = findDependencyChain(t, lane, origEnd);
+        const shiftCols = dayOffset(t.end) - dayOffset(origEnd);
+        if (chain.length && shiftCols !== 0) {
+          const verb = shiftCols > 0 ? "later" : "earlier";
+          const ok = window.confirm(
+            `${Math.abs(shiftCols)} workday(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount (waterfall) to keep the dependency intact?`
+          );
+          if (ok) {
+            const lastIdx = workdayList.length - 1;
+            for (const dep of chain) {
+              const depOrigStart = new Date(dep.start), depOrigEnd = new Date(dep.end);
+              const depStartIdx = dayOffset(dep.start);
+              const depWorkDays = dayOffset(dep.end) - depStartIdx + 1;
+              const newDepStartIdx = Math.max(0, Math.min(lastIdx, depStartIdx + shiftCols));
+              dep.start = new Date(workdayList[newDepStartIdx]);
+              dep.end = new Date(workdayList[Math.max(0, Math.min(lastIdx, newDepStartIdx + depWorkDays - 1))]);
+              // Only write cells that aren't formula-driven — a formula Start
+              // (=WORKDAY(H<prev>,1,…)) or formula End cascades on its own in
+              // the sheet once this task's End lands.
+              await saveChangedFields(dep, depOrigStart, depOrigEnd);
+            }
+          }
+        }
+      }
+    }
   } catch (err) {
     console.error(err);
     setStatus("Save failed — reload to resync: " + err.message, true);
