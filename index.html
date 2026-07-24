@@ -28,6 +28,9 @@
   #legend{display:none;gap:10px;align-items:center;font-size:11.5px;color:var(--muted);padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;flex-shrink:0;max-height:35vh;overflow-y:auto;}
   #legend.shown{display:flex;}
   #legend.shown.collapsed{display:none;}
+
+  #readonly-banner{display:none;align-items:center;gap:8px;font-size:12.5px;padding:8px 14px;background:#fffbeb;color:#92400e;border-bottom:1px solid #fde68a;flex-shrink:0;}
+  #readonly-banner.shown{display:flex;}
   .dot{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:4px;flex-shrink:0;}
 
   #signin-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:14px;text-align:center;padding:20px;}
@@ -231,6 +234,7 @@
 <div id="drawer-backdrop"></div>
 
 <div id="legend"></div>
+<div id="readonly-banner">👁 View-only access — you can browse the timeline, but changes can't be saved to this sheet.</div>
 
 <div id="signin-screen">
   <p>Sign in with your Google account to load the <b>Core General Raw Data</b> sheet as a drag-and-drop timeline. Dragging a bar updates the Start/End date cells directly in the sheet.</p>
@@ -299,6 +303,7 @@ const ACTIVITY_PALETTE = ["#bfdbfe","#bbf7d0","#fecaca","#fde68a","#ddd6fe","#a5
 /* ============================================================
    State
    ============================================================ */
+let readOnlyMode = false; // true once checkWritePermission() confirms this account can't edit the sheet
 let accessToken = null;
 let tokenClient = null;
 let tokenExpiryMs = 0;
@@ -616,7 +621,7 @@ document.getElementById("zoom").addEventListener("change", (e) => {
   render();
 });
 
-function onSignedIn() {
+async function onSignedIn() {
   document.getElementById("signin-screen").style.display = "none";
   document.getElementById("timeline-wrap").style.display = "block";
   document.getElementById("btn-signin").textContent = "Re-authenticate";
@@ -639,6 +644,12 @@ function onSignedIn() {
     document.getElementById("legend").classList.add("collapsed");
     document.getElementById("btn-legend-toggle").textContent = "Show legend";
   }
+
+  // Check edit permission before the user can attempt any drag, so a
+  // Viewer/Commenter gets a clear read-only mode instead of a drag that
+  // silently fails to save.
+  const canWrite = await checkWritePermission();
+  setReadOnlyMode(!canWrite);
 
   loadData();
 }
@@ -736,9 +747,70 @@ async function sheetsFetch(path, opts = {}) {
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Sheets API ${res.status}: ${body}`);
+    const err = new Error(`Sheets API ${res.status}: ${body}`);
+    err.status = res.status; // lets callers distinguish 403 (no edit permission) from other failures
+    throw err;
   }
   return res.json();
+}
+
+// Probes whether the signed-in account can actually edit the spreadsheet
+// (as opposed to only having Viewer/Commenter access). Creates a hidden
+// Developer Metadata entry — invisible in the UI and not part of the
+// revision-history cell edits users see — then immediately deletes it, so
+// a successful probe leaves no visible trace. A 403 means view-only access;
+// any other error is treated as "assume editable" so a network hiccup here
+// doesn't wrongly lock out a real editor.
+async function checkWritePermission() {
+  try {
+    const createRes = await sheetsFetch(":batchUpdate", {
+      method: "POST",
+      body: JSON.stringify({
+        requests: [{
+          createDeveloperMetadata: {
+            developerMetadata: {
+              metadataKey: "_timeline_write_probe",
+              metadataValue: String(Date.now()),
+              visibility: "DOCUMENT",
+              location: { spreadsheet: true },
+            },
+          },
+        }],
+      }),
+    });
+    const metadataId = createRes?.replies?.[0]?.createDeveloperMetadata?.developerMetadata?.metadataId;
+    if (metadataId != null) {
+      try {
+        await sheetsFetch(":batchUpdate", {
+          method: "POST",
+          body: JSON.stringify({
+            requests: [{ deleteDeveloperMetadata: { dataFilter: { developerMetadataLookup: { metadataId } } } }],
+          }),
+        });
+      } catch (cleanupErr) {
+        console.warn("Write-permission probe: cleanup of test metadata failed (harmless, but leaves a hidden entry):", cleanupErr);
+      }
+    }
+    return true;
+  } catch (err) {
+    if (err.status === 403) return false;
+    console.warn("Write-permission probe failed with a non-403 error; assuming editable so a real editor isn't wrongly locked out:", err);
+    return true;
+  }
+}
+
+// Toggles the app between full drag/edit mode and a read-only browsing mode
+// (for accounts with only Viewer/Commenter access on the sheet) — shows a
+// banner, hides every control that would otherwise attempt a write and then
+// fail silently-ish (dragging, Undo/Redo, bulk formula actions), and blocks
+// the drag-to-edit interactions on the bars themselves.
+function setReadOnlyMode(on) {
+  readOnlyMode = on;
+  document.getElementById("readonly-banner").classList.toggle("shown", on);
+  document.getElementById("btn-undo").style.display = on ? "none" : "inline-block";
+  document.getElementById("btn-redo").style.display = on ? "none" : "inline-block";
+  document.getElementById("btn-apply-frd-spec").style.display = on ? "none" : "inline-block";
+  document.getElementById("btn-align-waterfall").style.display = on ? "none" : "inline-block";
 }
 
 function parseDate(str) {
@@ -1396,6 +1468,10 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   bar.addEventListener("pointermove", (e) => {
     if (!mode) return;
     lastClientX = e.clientX; lastClientY = e.clientY;
+    // View-only accounts: track pointer movement (so a plain click below
+    // still opens the modal) but skip every date/position mutation, so
+    // dragging has no visible effect and never reaches a doomed sheet write.
+    if (readOnlyMode) return;
     const deltaPx = e.clientX - startX;
     // Since weekends/holidays are compressed out of the grid, each pixel
     // column IS a working day — so the drag delta maps directly to an
@@ -1841,6 +1917,22 @@ function openTaskModal(t) {
     warn.style.display = "block";
     warn.textContent = "This task's End date isn't a WORKDAY(Start, Estimate*100/Workload, Holidays) formula yet. Enter a workload and Apply — the formula will be written to the End cell.";
     workloadInput.value = 100;
+  }
+
+  const chainBtn = document.getElementById("tm-chain-start");
+  if (readOnlyMode) {
+    // View-only account — every control here would try (and fail) to write
+    // to the sheet, so disable them and say why instead of letting Apply
+    // silently error out.
+    estInput.disabled = true;
+    workloadInput.disabled = true;
+    recalcBtn.disabled = true;
+    chainBtn.disabled = true;
+    warn.style.display = "block";
+    warn.textContent = "You have view-only access to this sheet — estimate, workload, and Start-formula changes can't be saved.";
+  } else {
+    estInput.disabled = false;
+    chainBtn.disabled = false;
   }
 
   document.getElementById("task-modal-backdrop").classList.add("open");
