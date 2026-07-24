@@ -31,6 +31,10 @@
 
   #readonly-banner{display:none;align-items:center;gap:8px;font-size:12.5px;padding:8px 14px;background:#fffbeb;color:#92400e;border-bottom:1px solid #fde68a;flex-shrink:0;}
   #readonly-banner.shown{display:flex;}
+
+  /* View-only accounts: bars are inert — no grab cursor, no click/drag. */
+  body.readonly-mode .bar,
+  body.readonly-mode .bar .handle{cursor:default;}
   .dot{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:4px;flex-shrink:0;}
 
   #signin-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:14px;text-align:center;padding:20px;}
@@ -806,6 +810,7 @@ async function checkWritePermission() {
 // the drag-to-edit interactions on the bars themselves.
 function setReadOnlyMode(on) {
   readOnlyMode = on;
+  document.body.classList.toggle("readonly-mode", on);
   document.getElementById("readonly-banner").classList.toggle("shown", on);
   document.getElementById("btn-undo").style.display = on ? "none" : "inline-block";
   document.getElementById("btn-redo").style.display = on ? "none" : "inline-block";
@@ -1439,6 +1444,9 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   let lastClientX = 0, lastClientY = 0;
 
   const onMouseDown = (e) => {
+    // View-only accounts: block the interaction entirely — no drag, no
+    // click-to-open-modal — rather than starting it and quietly no-op'ing.
+    if (readOnlyMode) return;
     if (e.target.classList.contains("handle")) {
       mode = e.target.classList.contains("left") ? "left" : "right";
     } else {
