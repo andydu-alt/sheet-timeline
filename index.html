@@ -1451,9 +1451,14 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
 
     const wasMove = mode === "move";
     const wasRight = mode === "right";
+    const wasLeft = mode === "left";
     const changed = t.start.getTime() !== origStart.getTime() || t.end.getTime() !== origEnd.getTime();
     const endChanged = t.end.getTime() !== origEnd.getTime();
     mode = null;
+
+    // Resizing (either handle) changes the working-day span, so recompute
+    // Estimate from it — a plain move preserves the span, so it's skipped.
+    const estRecalced = (wasLeft || wasRight) && changed && recalcEstimateForResize(t);
 
     // Vertical drag (whole-bar move only) = reorder priority within the lane.
     let chainFormulaFixed = [];
@@ -1534,6 +1539,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
       const directField = wasRight ? "end" : "start";
       await saveChangedFields(t, origStart, origEnd, directField);
     }
+    if (estRecalced) await saveEstimate(t);
     // Downstream chained tasks were never directly touched by the user —
     // only write fields that are NOT formula-driven; formula fields cascade
     // on their own once the field(s) above land in the sheet.
@@ -1620,6 +1626,42 @@ async function saveField(t, field) {
     console.error(err);
     setStatus("Save failed — reload to resync: " + err.message, true);
   }
+}
+
+// Writes the Estimate cell (I) as a plain number — used when a resize drag
+// changes the task's duration, so the Estimate stays consistent with the
+// new Start/End span instead of silently going stale (see recalcEstimateForResize).
+async function saveEstimate(t) {
+  setStatus(`Saving row ${t.rowNum} (estimate)…`, false, true);
+  try {
+    const range = `'${CONFIG.SHEET_NAME}'!I${t.rowNum}`;
+    await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
+      method: "PUT",
+      body: JSON.stringify({ range, majorDimension: "ROWS", values: [[String(t.estNum)]] }),
+    });
+    setStatus(`Saved row ${t.rowNum} estimate: ${t.estNum} · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Save failed — reload to resync: " + err.message, true);
+  }
+}
+
+// Dragging a resize handle (left or right) changes the task's working-day
+// span directly, but the sheet's Estimate cell is otherwise untouched — so
+// it silently drifts out of sync with what the End formula's own math would
+// imply (Estimate*100/Workload workdays), and the task modal keeps showing
+// the stale value. When the End formula is the standard WORKDAY pattern, we
+// know the Workload %, so we back-solve the new Estimate from the new span
+// and update it in memory + the sheet. Returns true if it changed anything.
+function recalcEstimateForResize(t) {
+  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+  if (!parsed) return false; // no known workload — nothing to back-solve from
+  const newWorkDays = dayOffset(t.end) - dayOffset(t.start) + 1;
+  const newEst = Math.round((newWorkDays * parsed.workload / 100) * 10) / 10;
+  if (newEst === t.estNum) return false;
+  t.est = String(newEst);
+  t.estNum = newEst;
+  return true;
 }
 
 // Writes whichever of Start/End actually changed, skipping any field that's
