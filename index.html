@@ -2256,15 +2256,50 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
       }
     }
 
+    // Dragging a task's Start to land immediately after the task above it
+    // (same lane, previous priority slot) usually means the user WANTS that
+    // dependency, not just a coincidental date match — offer to chain it the
+    // same way the task-detail modal's "Chain start" button does, so future
+    // moves of the task above automatically carry this one along.
+    let chainedToPrev = false;
+    if ((wasMove || wasLeft) && lane) {
+      const pos = lane.idxs.indexOf(idx);
+      if (pos > 0) {
+        const prevTask = tasks[lane.idxs[pos - 1]];
+        const alignsRightAfter = dayOffset(t.start) === dayOffset(prevTask.end) + 1;
+        const chainRe = new RegExp("WORKDAY\\(\\s*" + CONFIG.A1.END + "(\\d+)", "i");
+        const m = t.startIsFormula ? (t.startFormulaRaw || "").match(chainRe) : null;
+        const alreadyChainedToPrev = m && parseInt(m[1], 10) === prevTask.rowNum;
+        if (alignsRightAfter && !alreadyChainedToPrev) {
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const ok = window.confirm(
+            `This task's Start now lines up right after "${prevTask.label}" (the task above it).\n\nChain its Start formula to that task, so it automatically follows if that task's schedule shifts?`
+          );
+          if (ok) {
+            await writeFormula(t, "start", buildStartChainFormula(prevTask.rowNum));
+            t.start = excelWorkday(prevTask.end, 1);
+            if (t.endIsFormula) {
+              const parsedEnd = parseWorkdayFormula(t.endFormulaRaw);
+              if (parsedEnd) t.end = excelWorkday(t.start, workdaySpanFor(t.estNum, parsedEnd.workload, parsedEnd.offset));
+            }
+            chainedToPrev = true;
+          }
+        }
+      }
+    }
+
     // The dialogs above are the only things that can still move dates at
     // this point; the reorder itself was already painted before them.
-    if (chainShifted.length || chainFormulaFixed.length) render();
+    if (chainShifted.length || chainFormulaFixed.length || chainedToPrev) render();
 
     // Only write the field the user actually dragged — 'move'/'left' drag
     // the Start handle, 'right' drags the End handle. The other field is
     // left untouched so any formula in it (e.g. End = Start + duration)
     // keeps cascading inside the sheet instead of being overwritten.
-    if (changed) {
+    // Skipped entirely when chainedToPrev — writeFormula() above already
+    // wrote the Start cell (as a formula), so a plain-date write here would
+    // immediately clobber it back into a literal date.
+    if (changed && !chainedToPrev) {
       const directField = wasRight ? "end" : "start";
       await saveChangedFields(t, origStart, origEnd, directField);
     }
