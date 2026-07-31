@@ -1729,6 +1729,10 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   let lastClientX = 0, lastClientY = 0;
 
   const onMouseDown = (e) => {
+    // Right-click (and middle-click) must fall through to the contextmenu
+    // handler untouched — otherwise this fires first on pointerdown/up and
+    // opens the task-detail modal before the context menu ever gets a look.
+    if (e.button !== 0) return;
     // View-only accounts: block the interaction entirely — no drag, no
     // click-to-open-modal — rather than starting it and quietly no-op'ing.
     if (readOnlyMode) return;
