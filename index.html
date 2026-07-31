@@ -2176,6 +2176,16 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
 
     if (changed || reordered || estRecalced) commitUndoPoint(preDragSnapshot);
     render();
+    // render() only queues a new frame — it does not guarantee the browser
+    // has painted it yet. The two window.confirm() calls below are SYNCHRONOUS
+    // blocking calls, and on many mobile browsers/WebViews a blocking dialog
+    // that fires before the pending frame is composited makes that frame get
+    // dropped entirely: the reordered/moved layout stays invisible until the
+    // next touch forces a repaint (the exact "must touch it again" bug).
+    // Waiting for two animation-frame ticks unconditionally — cheap, and
+    // covers every path below that can reach a confirm() — guarantees the
+    // browser has committed the paint BEFORE either dialog can block the thread.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     let chainFormulaFixed = [];
     if (reordered) {
