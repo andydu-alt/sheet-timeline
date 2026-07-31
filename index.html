@@ -433,45 +433,106 @@
    ============================================================ */
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
-/* Product lines. Each entry is a self-contained description of one source
-   sheet: which spreadsheet/tab to read, where its columns sit, and which A1
-   column letters the write paths must target. The two sheets do NOT share a
-   column layout (the Database sheet has no Department column, so Start/End/Est
-   land one column to the left), which is why every hardcoded "G"/"H"/"I" below
-   now goes through A1.START / A1.END / A1.EST instead.
+/* Product lines. Each entry names which spreadsheet/tab to read, plus the
+   HEADER TEXT of every column the app needs — never a hardcoded column
+   letter or index. The two sheets do NOT share a layout (the Database sheet
+   has no Department column, so Start/End/Est land one column to the left of
+   where Core has them), which is exactly the kind of drift that silently
+   breaks a hand-maintained letter map: a hardcoded "H" is only ever right
+   for the one sheet it was written against. Resolving by header name at
+   load time (see resolveColumns() below) means a column can move, and even
+   a brand-new source only needs its header text listed here — no counting
+   columns by hand, and no repeat of the Est/End-column mixup this replaced.
 
-   COL indexes are 0-based within the fetched A:<LAST_COL> range; -1 means the
-   column doesn't exist in that sheet. */
+   HEADERS values are matched case-insensitively/trimmed against row 1 of the
+   sheet. COL_OVERRIDE gives the 0-based column index directly for the rare
+   column that has no usable header text at all (see Database's Status
+   below) — everything else must resolve by name or the sheet fails to load
+   with a clear error instead of silently reading/writing the wrong column. */
 const SOURCES = {
   "core-general": {
     LABEL: "Core (General)",
     SPREADSHEET_ID: "1mM_6BOF2_XsmXJudqXMic95eAmxAShVBfbILxm7F86I",
     SHEET_NAME: "Core general Raw Data",
     SHEET_ID: 2062939958, // numeric gid — needed by insertDimension when adding a row
-    LAST_COL: "L",
     HOLIDAYS_RANGE: "Holidays!B1:B300",
     HOLIDAYS_ARG: "Holidays!$B$2:$B", // as written into WORKDAY formulas
-    COL: { ASSIGNEE:0, DEPT:1, JIRA:2, FEATURE:3, TASKS:4, ACTIVITY:5, START:6, END:7, EST:8, FORECAST:9, STATUS:10, NAMEINPLAN:11 },
-    A1:  { ASSIGNEE:"A", JIRA:"C", FEATURE:"D", TASKS:"E", ACTIVITY:"F", START:"G", END:"H", EST:"I", STATUS:"K" },
+    HEADERS: {
+      ASSIGNEE: "Assignee", DEPT: "Department", JIRA: "JIRA ID", FEATURE: "Feature/Improvement/Support",
+      TASKS: "Tasks", ACTIVITY: "Activity", START: "Start date", END: "End date", EST: "Est", STATUS: "Status",
+    },
   },
   "database": {
     LABEL: "Database",
     SPREADSHEET_ID: "1MgMxS3NxYiDE6ew0EgHJfbevx4ddU6Z37_JL4n3ENJM",
     SHEET_NAME: "Raw Data",
     SHEET_ID: 1496007209,
-    LAST_COL: "L",
     HOLIDAYS_RANGE: "Holidays!B1:B300",
     HOLIDAYS_ARG: "Holidays!$B$2:$B",
-    // Status is column I. Note that this sheet's trailing headers do not line up
-    // with the data underneath them — I has a blank header but holds the status,
-    // so the column is mapped by position, not by header text.
-    COL: { ASSIGNEE:0, TASKS:1, JIRA:2, FEATURE:3, ACTIVITY:4, START:5, END:6, EST:7, STATUS:8, DEPT:-1, FORECAST:-1, NAMEINPLAN:-1 },
-    A1:  { ASSIGNEE:"A", JIRA:"C", FEATURE:"D", TASKS:"B", ACTIVITY:"E", START:"F", END:"G", EST:"H", STATUS:"I" },
+    HEADERS: {
+      ASSIGNEE: "Assignee", JIRA: "JIRA ID", FEATURE: "Feature/Improvement/Support",
+      TASKS: "Tasks", ACTIVITY: "Activity", START: "Start date", END: "End date", EST: "Est",
+      // No DEPT header in this sheet at all — omitted, resolves to "not present".
+    },
+    // Status (column I) has a BLANK header in this sheet — "Groupby" and
+    // "Approved" are its neighbours' headers, not its own — so it cannot be
+    // found by name. This is the one deliberate positional exception; every
+    // other column above resolves by header text.
+    COL_OVERRIDE: { STATUS: 8 },
     // Fixed set of accepted values, so the Add-task dropdown can't offer the
     // stray values ("On train", …) that are already sitting in this column.
     STATUS_OPTIONS: ["Done", "In Progress", "Not Start"],
   },
 };
+
+// Standard spreadsheet column-letter conversion (0 -> A, 25 -> Z, 26 -> AA, …).
+function colIndexToLetter(index) {
+  let n = index + 1, s = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+// Reads row 1 of the current source's sheet and resolves every field in its
+// HEADERS map to a live column index/letter, falling back to COL_OVERRIDE
+// only for fields explicitly marked positional. A HEADERS entry that isn't
+// found and has no override is a hard error — surfacing a moved/renamed
+// column immediately beats silently reading or writing the wrong one.
+async function resolveColumns() {
+  const headerRow = (await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!1:1`)}?majorDimension=ROWS`)).values?.[0] || [];
+  const byHeader = new Map(); // normalized header text -> 0-based index
+  headerRow.forEach((h, i) => {
+    const key = (h || "").trim().toLowerCase();
+    if (key && !byHeader.has(key)) byHeader.set(key, i); // first match wins if a header repeats
+  });
+
+  const overrides = CONFIG.COL_OVERRIDE || {};
+  const col = {}, a1 = {};
+  // Every field named in HEADERS, plus any that exist ONLY as a positional
+  // override (Database's Status has no header text at all, so it never appears
+  // in HEADERS and would otherwise be dropped entirely).
+  const fields = new Set([...Object.keys(CONFIG.HEADERS), ...Object.keys(overrides)]);
+  fields.forEach((field) => {
+    const headerText = CONFIG.HEADERS[field];
+    let index = headerText === undefined ? undefined : byHeader.get(headerText.trim().toLowerCase());
+    if (index === undefined && field in overrides) index = overrides[field];
+    if (index === undefined) {
+      throw new Error(`Column "${headerText || field}" not found in row 1 of "${CONFIG.SHEET_NAME}" — the sheet's headers may have changed.`);
+    }
+    col[field] = index;
+    a1[field] = colIndexToLetter(index);
+  });
+  // Fields the app can read but that don't exist in every source (e.g.
+  // Database has no Department column) resolve to -1 rather than erroring.
+  ["DEPT", "FORECAST", "NAMEINPLAN"].forEach((field) => { if (!(field in col)) col[field] = -1; });
+
+  CONFIG.COL = col;
+  CONFIG.A1 = a1;
+  CONFIG.LAST_COL = colIndexToLetter(Math.max(headerRow.length - 1, ...Object.values(col)));
+}
 
 const SOURCE_STORAGE_KEY = "sheet_timeline_source_v1";
 let sourceId = localStorage.getItem(SOURCE_STORAGE_KEY);
@@ -1219,6 +1280,10 @@ async function loadData() {
   setStatus("Loading sheet…");
   try {
     if (holidaySet.size === 0) await loadHolidays();
+    // Resolved once per source per session (cheap to skip on the re-loads
+    // that follow an insert/undo — headers don't move mid-session; a real
+    // header rename picks up on the next full page load).
+    if (!CONFIG.COL) await resolveColumns();
     const range = `'${CONFIG.SHEET_NAME}'!A2:${CONFIG.LAST_COL}3000`;
     // Fetch formulas too (separately) so we know which Start/End cells are
     // formula-driven (e.g. "=H4+1" for a dependent Start) and never
