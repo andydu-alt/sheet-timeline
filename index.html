@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Core General — Timeline</title>
+<title>Timeline</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
@@ -185,17 +185,64 @@
     display:block;position:fixed;top:0;bottom:0;right:0;width:5px;
     background:rgba(0,0,0,.06);z-index:230;pointer-events:none;
   }
+  /* --- Right-click context menu on a bar --- */
+  #bar-context-menu{
+    display:none;position:fixed;z-index:300;background:#fff;border:1px solid var(--border);
+    border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;min-width:170px;
+  }
+  #bar-context-menu.open{display:block;}
+  #bar-context-menu button{
+    display:block;width:100%;text-align:left;padding:8px 10px;font-size:13px;
+    background:none;border:0;border-radius:6px;cursor:pointer;
+  }
+  #bar-context-menu button:hover{background:#eef2ff;}
+
+  /* --- Add-task modal: same shell as the task detail modal --- */
+  #new-task-backdrop{
+    display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:310;
+    align-items:center;justify-content:center;padding:20px;overflow-y:auto;
+  }
+  #new-task-backdrop.open{display:flex;}
+  #new-task-modal{
+    background:#fff;border-radius:12px;box-shadow:0 20px 50px rgba(0,0,0,.3);
+    width:100%;max-width:430px;padding:20px 22px;
+  }
+  #new-task-modal h2{margin:0 0 2px;font-size:16px;}
+  #new-task-modal .sub{color:#64748b;font-size:12.5px;margin-bottom:14px;}
+  #new-task-modal .field{margin-bottom:12px;}
+  #new-task-modal .field label{display:block;font-size:12px;color:#475569;margin-bottom:4px;}
+  #new-task-modal .field input, #new-task-modal .field select{
+    width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;
+  }
+  #new-task-modal .row{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;padding:6px 0;border-top:1px solid var(--border);}
+  #new-task-modal .row span:first-child{color:#64748b;}
+  #new-task-modal .row span:last-child{text-align:right;word-break:break-word;}
+  #new-task-modal .preview{
+    margin:12px 0 0;padding:9px 11px;background:#f1f5f9;border-radius:6px;font-size:12.5px;line-height:1.55;
+  }
+  #new-task-modal .warn{
+    margin:10px 0 0;padding:9px 11px;background:#fef3c7;border-radius:6px;font-size:12.5px;color:#92400e;
+  }
+  #new-task-modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+  #new-task-modal .actions button{padding:7px 14px;font-size:13px;}
+  #nt-create{background:var(--accent);color:#fff;border-color:var(--accent);}
+  #nt-create:disabled{opacity:.55;cursor:default;}
+
+  body.mobile-mode #new-task-modal{max-width:none;}
+  body.mobile-mode #bar-context-menu button{padding:12px 12px;font-size:14.5px;}
+
   body.mobile-mode #mobile-vscroll-thumb{position:absolute;left:0;right:0;top:0;background:rgba(37,99,235,.55);border-radius:3px;}
 </style>
 </head>
 <body>
 
 <div id="toolbar">
-  <h1>Core General — Timeline</h1>
+  <h1 id="page-title">Timeline</h1>
   <button id="btn-drawer-toggle">☰ Settings</button>
   <button id="btn-today" style="display:none;">Today</button>
   <div id="current-assignee-banner"></div>
   <div id="toolbar-controls">
+    <select id="product-line" title="Product line (source sheet)"></select>
     <button id="btn-signin">Sign in with Google</button>
     <button id="btn-reload" style="display:none;">Reload from Sheet</button>
     <button id="btn-undo" class="icon-btn" style="display:none;" disabled title="Undo"><span>↶</span><i id="undo-count"></i></button>
@@ -241,7 +288,7 @@
 <div id="readonly-banner">👁 View-only access — you can browse the timeline, but changes can't be saved to this sheet.</div>
 
 <div id="signin-screen">
-  <p>Sign in with your Google account to load the <b>Core General Raw Data</b> sheet as a drag-and-drop timeline. Dragging a bar updates the Start/End date cells directly in the sheet.</p>
+  <p>Sign in with your Google account to load the <b id="signin-source">–</b> sheet as a drag-and-drop timeline. Dragging a bar updates the Start/End date cells directly in the sheet.</p>
 </div>
 
 <div id="timeline-wrap">
@@ -251,6 +298,49 @@
 <div id="mobile-vscroll"><div id="mobile-vscroll-thumb"></div></div>
 
 <div id="tooltip"></div>
+
+<div id="bar-context-menu">
+  <button data-where="above">Add task above</button>
+  <button data-where="below">Add task below</button>
+</div>
+
+<div id="new-task-backdrop">
+  <div id="new-task-modal">
+    <h2 id="nt-title">Add task</h2>
+    <div class="sub" id="nt-sub"></div>
+    <div class="field">
+      <label for="nt-name">Task name</label>
+      <input type="text" id="nt-name" placeholder="e.g. Review atomic spec">
+    </div>
+    <div class="field">
+      <label for="nt-activity">Activity</label>
+      <select id="nt-activity"></select>
+    </div>
+    <div class="field">
+      <label for="nt-est">Estimate (man-days)</label>
+      <input type="number" id="nt-est" step="0.1" min="0">
+    </div>
+    <div class="field">
+      <label for="nt-workload">Workload (%)</label>
+      <input type="number" id="nt-workload" step="1" min="1" max="100">
+    </div>
+    <div class="field">
+      <label for="nt-assignee">Assignee</label>
+      <select id="nt-assignee"></select>
+    </div>
+    <div class="field">
+      <label for="nt-status">Status</label>
+      <select id="nt-status"></select>
+    </div>
+    <div class="row"><span>Feature/Improvement/Support</span><span id="nt-feature">–</span></div>
+    <div class="preview" id="nt-preview"></div>
+    <div class="warn" id="nt-warn" style="display:none;"></div>
+    <div class="actions">
+      <button id="nt-cancel">Cancel</button>
+      <button id="nt-create">Create task</button>
+    </div>
+  </div>
+</div>
 
 <div id="task-modal-backdrop">
   <div id="task-modal">
@@ -290,15 +380,63 @@
 /* ============================================================
    CONFIG — fill these in before deploying
    ============================================================ */
+const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
+
+/* Product lines. Each entry is a self-contained description of one source
+   sheet: which spreadsheet/tab to read, where its columns sit, and which A1
+   column letters the write paths must target. The two sheets do NOT share a
+   column layout (the Database sheet has no Department column, so Start/End/Est
+   land one column to the left), which is why every hardcoded "G"/"H"/"I" below
+   now goes through A1.START / A1.END / A1.EST instead.
+
+   COL indexes are 0-based within the fetched A:<LAST_COL> range; -1 means the
+   column doesn't exist in that sheet. */
+const SOURCES = {
+  "core-general": {
+    LABEL: "Core (General)",
+    SPREADSHEET_ID: "1mM_6BOF2_XsmXJudqXMic95eAmxAShVBfbILxm7F86I",
+    SHEET_NAME: "Core general Raw Data",
+    SHEET_ID: 2062939958, // numeric gid — needed by insertDimension when adding a row
+    LAST_COL: "L",
+    HOLIDAYS_RANGE: "Holidays!B1:B300",
+    HOLIDAYS_ARG: "Holidays!$B$2:$B", // as written into WORKDAY formulas
+    COL: { ASSIGNEE:0, DEPT:1, JIRA:2, FEATURE:3, TASKS:4, ACTIVITY:5, START:6, END:7, EST:8, FORECAST:9, STATUS:10, NAMEINPLAN:11 },
+    A1:  { ASSIGNEE:"A", JIRA:"C", FEATURE:"D", TASKS:"E", ACTIVITY:"F", START:"G", END:"H", EST:"I", STATUS:"K" },
+  },
+  "database": {
+    LABEL: "Database",
+    SPREADSHEET_ID: "1MgMxS3NxYiDE6ew0EgHJfbevx4ddU6Z37_JL4n3ENJM",
+    SHEET_NAME: "Raw Data",
+    SHEET_ID: 1496007209,
+    LAST_COL: "L",
+    HOLIDAYS_RANGE: "Holidays!B1:B300",
+    HOLIDAYS_ARG: "Holidays!$B$2:$B",
+    COL: { ASSIGNEE:0, TASKS:1, JIRA:2, FEATURE:3, ACTIVITY:4, START:5, END:6, EST:7, DEPT:-1, FORECAST:-1, STATUS:10, NAMEINPLAN:11 },
+    A1:  { ASSIGNEE:"A", JIRA:"C", FEATURE:"D", TASKS:"B", ACTIVITY:"E", START:"F", END:"G", EST:"H", STATUS:"K" },
+  },
+};
+
+const SOURCE_STORAGE_KEY = "sheet_timeline_source_v1";
+let sourceId = localStorage.getItem(SOURCE_STORAGE_KEY);
+if (!SOURCES[sourceId]) sourceId = "core-general";
+
+/* CONFIG is a live view onto the selected source, so every existing
+   CONFIG.SHEET_NAME / CONFIG.COL reference keeps working unchanged; switching
+   product line just re-points it. */
 const CONFIG = {
-  CLIENT_ID: "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com",
-  SPREADSHEET_ID: "1mM_6BOF2_XsmXJudqXMic95eAmxAShVBfbILxm7F86I",
-  SHEET_NAME: "Core general Raw Data",
-  // Columns (0-indexed) within the fetched range A:L
-  COL: { ASSIGNEE:0, DEPT:1, JIRA:2, FEATURE:3, TASKS:4, ACTIVITY:5, START:6, END:7, EST:8, FORECAST:9, STATUS:10, NAMEINPLAN:11 },
+  CLIENT_ID,
   SCOPES: "https://www.googleapis.com/auth/spreadsheets",
   TOKEN_STORAGE_KEY: "sheet_timeline_token_v1",
 };
+function applySourceToConfig() {
+  Object.assign(CONFIG, SOURCES[sourceId]);
+}
+applySourceToConfig();
+
+// Per-product-line localStorage keys. Manual row order and the assignee /
+// activity filter selections are keyed by row number and by name, so they are
+// meaningless across sheets and must never leak from one product line to the other.
+function nsKey(base) { return `${base}::${sourceId}`; }
 
 let LABEL_W = 118; // 0 in mobile mode — the frozen label column is replaced by a scroll-synced banner instead
 let laneScrollRanges = []; // [{name, yStart}] in body-row-relative Y, rebuilt each render() — drives the mobile assignee banner
@@ -363,7 +501,7 @@ function addWorkingDaysInclusive(start, workDayCount) {
 
 async function loadHolidays() {
   try {
-    const data = await sheetsFetch(`/values/${encodeURIComponent("Holidays!B1:B300")}?majorDimension=ROWS`);
+    const data = await sheetsFetch(`/values/${encodeURIComponent(CONFIG.HOLIDAYS_RANGE)}?majorDimension=ROWS`);
     const rows = data.values || [];
     holidaySet = new Set();
     rows.forEach((row) => {
@@ -377,9 +515,10 @@ async function loadHolidays() {
 let activityColors = new Map();
 let selectedAssignees = null; // null = all selected; else Set of names
 let selectedActivities = null; // null = all selected; else Set of activity names
-const ORDER_STORAGE_KEY = "sheet_timeline_order_v1";
+const ORDER_STORAGE_KEY = nsKey("sheet_timeline_order_v1");
 let manualOrder = {}; // assignee name -> [rowNum, ...] priority order, drag-to-reorder, persisted locally
 try { manualOrder = JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || "{}"); } catch (e) { manualOrder = {}; }
+function saveManualOrder() { localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder)); }
 
 /* ============================================================
    Undo / redo (10 steps) — covers drag date changes, resizes,
@@ -409,6 +548,79 @@ function snapshotState() {
     })),
     manualOrder: JSON.parse(JSON.stringify(manualOrder)),
   };
+}
+
+/* ------------------------------------------------------------
+   Row-number remapping for history entries.
+
+   Every stack entry addresses rows by sheet row number, so inserting or
+   deleting a row invalidates the entries recorded before it. Rather than
+   throwing the history away, we shift the stored row numbers to match — which
+   is what lets "add task" sit in the undo stack alongside drags and resizes.
+   dir = +1 for a row inserted at `pivot`, -1 for that row being removed again.
+   ------------------------------------------------------------ */
+function shiftRowNum(r, pivot, dir) {
+  if (dir > 0) return r >= pivot ? r + 1 : r;
+  return r > pivot ? r - 1 : r;
+}
+
+// Our own chain formulas embed a row number (=WORKDAY(H37,1,Holidays…)). A
+// stored formula string is not touched by Sheets' own reference rewriting, so
+// shift the row inside it too, or a nested undo would restore a stale reference.
+function remapRowRefsInFormula(value, pivot, dir) {
+  if (typeof value !== "string" || !value.startsWith("=")) return value;
+  // The Holidays range is always the last argument and its row bounds must NOT
+  // move with a task row, so only the arguments before it are rewritten.
+  // Absolute references ($B$2, $B1344) are left alone for the same reason.
+  const cut = value.lastIndexOf(",");
+  const head = cut === -1 ? value : value.slice(0, cut);
+  const tail = cut === -1 ? "" : value.slice(cut);
+  const remapped = head.replace(/(\$?)([A-Z]{1,3})(\$?)(\d+)/g, (m, absCol, col, absRow, row) => {
+    if (absCol || absRow) return m; // absolute — not a task row reference
+    return col + shiftRowNum(parseInt(row, 10), pivot, dir);
+  });
+  return remapped + tail;
+}
+
+function remapHistoryEntry(entry, pivot, dir) {
+  if (!entry) return entry;
+  if (entry.kind === "insert") {
+    entry.clickedRowNum = shiftRowNum(entry.clickedRowNum, pivot, dir);
+    if (entry.shiftedRestore) {
+      entry.shiftedRestore.rowNum = shiftRowNum(entry.shiftedRestore.rowNum, pivot, dir);
+      entry.shiftedRestore.value = remapRowRefsInFormula(entry.shiftedRestore.value, pivot, dir);
+    }
+    entry.manualOrderBefore = remapManualOrderMap(entry.manualOrderBefore, pivot, dir);
+    return entry;
+  }
+  // Plain state snapshot. On a delete, the removed row's own entry is dropped.
+  entry.dates = entry.dates
+    .filter((d) => !(dir < 0 && d.rowNum === pivot))
+    .map((d) => Object.assign(d, {
+      rowNum: shiftRowNum(d.rowNum, pivot, dir),
+      startFormulaRaw: remapRowRefsInFormula(d.startFormulaRaw, pivot, dir),
+      endFormulaRaw: remapRowRefsInFormula(d.endFormulaRaw, pivot, dir),
+    }));
+  entry.manualOrder = remapManualOrderMap(entry.manualOrder, pivot, dir);
+  return entry;
+}
+
+function remapManualOrderMap(map, pivot, dir) {
+  const out = {};
+  Object.keys(map || {}).forEach((name) => {
+    out[name] = (map[name] || [])
+      .filter((r) => !(dir < 0 && r === pivot))
+      .map((r) => shiftRowNum(r, pivot, dir));
+  });
+  return out;
+}
+
+// Remaps every entry already on the stacks. `except` is the entry currently
+// being pushed or applied, which already carries the correct row numbers.
+function remapHistory(pivot, dir, except) {
+  [undoStack, redoStack].forEach((stack) => {
+    stack.forEach((entry) => { if (entry !== except) remapHistoryEntry(entry, pivot, dir); });
+  });
 }
 
 function commitUndoPoint(preSnapshot) {
@@ -448,7 +660,7 @@ async function applySnapshot(snapshot) {
     writes.push({ t, fields });
   });
   manualOrder = snapshot.manualOrder;
-  localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
+  saveManualOrder();
   buildLanes();
   render();
   for (const { t, fields } of writes) {
@@ -461,9 +673,9 @@ async function applySnapshot(snapshot) {
 // as the literal date, and Estimate as its numeric value.
 async function restoreCell(t, field) {
   let col, value;
-  if (field === "start") { col = "G"; value = t.startIsFormula && t.startFormulaRaw ? t.startFormulaRaw : fmtDate(t.start); }
-  else if (field === "end") { col = "H"; value = t.endIsFormula && t.endFormulaRaw ? t.endFormulaRaw : fmtDate(t.end); }
-  else { col = "I"; value = t.estNum !== null && t.estNum !== undefined ? String(t.estNum) : (t.est || ""); }
+  if (field === "start") { col = CONFIG.A1.START; value = t.startIsFormula && t.startFormulaRaw ? t.startFormulaRaw : fmtDate(t.start); }
+  else if (field === "end") { col = CONFIG.A1.END; value = t.endIsFormula && t.endFormulaRaw ? t.endFormulaRaw : fmtDate(t.end); }
+  else { col = CONFIG.A1.EST; value = t.estNum !== null && t.estNum !== undefined ? String(t.estNum) : (t.est || ""); }
   const range = `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`;
   setStatus(`Restoring row ${t.rowNum} (${field})…`, false, true);
   try {
@@ -478,24 +690,44 @@ async function restoreCell(t, field) {
   }
 }
 
+/* Two kinds of history entry now share these stacks:
+     - a state snapshot (dates/estimates/formulas) — undone by re-applying it;
+     - an { kind: "insert" } record from the right-click "add task" flow —
+       undone by deleting the row again, redone by re-inserting it.
+   An insert entry is its own inverse, so it moves between the stacks intact
+   instead of being paired with a "current state" snapshot. */
 async function undo() {
   if (!undoStack.length) return;
+  const entry = undoStack.pop();
+  if (entry.kind === "insert") {
+    redoStack.push(entry);
+    if (redoStack.length > MAX_HISTORY) redoStack.shift();
+    updateUndoRedoButtons();
+    await undoRowInsert(entry);
+    return;
+  }
   const current = snapshotState();
-  const prev = undoStack.pop();
   redoStack.push(current);
   if (redoStack.length > MAX_HISTORY) redoStack.shift();
   updateUndoRedoButtons();
-  await applySnapshot(prev);
+  await applySnapshot(entry);
 }
 
 async function redo() {
   if (!redoStack.length) return;
+  const entry = redoStack.pop();
+  if (entry.kind === "insert") {
+    undoStack.push(entry);
+    if (undoStack.length > MAX_HISTORY) undoStack.shift();
+    updateUndoRedoButtons();
+    await redoRowInsert(entry);
+    return;
+  }
   const current = snapshotState();
-  const next = redoStack.pop();
   undoStack.push(current);
   if (undoStack.length > MAX_HISTORY) undoStack.shift();
   updateUndoRedoButtons();
-  await applySnapshot(next);
+  await applySnapshot(entry);
 }
 
 function updateUndoRedoButtons() {
@@ -523,7 +755,7 @@ document.addEventListener("keydown", (e) => {
    UI state (zoom, legend visibility, assignee selection) —
    persisted across reloads so the view doesn't reset every time.
    ============================================================ */
-const UI_STATE_KEY = "sheet_timeline_ui_state_v1";
+const UI_STATE_KEY = nsKey("sheet_timeline_ui_state_v1");
 let uiState = { zoom: 24, legendCollapsed: false, assignees: null, activities: null, mobileMode: undefined }; // null = not yet customized (default all); mobileMode: undefined = not yet chosen, auto-detect from screen size
 try {
   const saved = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "null");
@@ -847,15 +1079,42 @@ function excelWorkday(start, numDaysRaw) {
   return d;
 }
 
-// Parses the specific pattern used in this sheet's End-date formula:
-//   =WORKDAY(<startCell>, <estCell>*100/<workload>, <holidaysRange>)
-// Returns { startRef, estRef, workload, holidaysArg } or null if the
-// formula doesn't match (in which case recalculation isn't offered).
+// Parses the End-date WORKDAY formula and back-solves the workload % from it.
+// Both source sheets express the same idea in different arithmetic, and some
+// rows carry a trailing day offset, so all of these must parse:
+//   =WORKDAY(G5,  I5*100/75, Holidays)     Core, workload 75%
+//   =WORKDAY(G5,  I5*100/75+1, Holidays)   Core with a +1 day offset
+//   =WORKDAY(F15, H15*2-1, Holidays)       Database sheet: *2 == workload 50%
+// Returns { startRef, estRef, workload, offset, holidaysArg }, or null when the
+// formula isn't recognisable (in which case recalculation isn't offered).
 function parseWorkdayFormula(formula) {
   if (!formula) return null;
-  const m = formula.match(/WORKDAY\(\s*([A-Z]+\d+)\s*,\s*([A-Z]+\d+)\s*\*\s*100\s*\/\s*([\d.]+)\s*,\s*(.+)\)\s*$/i);
+  const m = formula.match(
+    /WORKDAY\(\s*([A-Z]+\d+)\s*,\s*([A-Z]+\d+)\s*\*\s*([\d.]+)\s*(?:\/\s*([\d.]+)\s*)?(?:([+-])\s*([\d.]+)\s*)?,\s*(.+)\)\s*$/i
+  );
   if (!m) return null;
-  return { startRef: m[1], estRef: m[2], workload: parseFloat(m[3]), holidaysArg: m[4] };
+  const mult = parseFloat(m[3]);
+  const div = m[4] !== undefined ? parseFloat(m[4]) : null;
+  if (!mult) return null;
+  // est*100/W  -> workload W.   est*N (no divisor) -> same as est*100/(100/N).
+  const workload = div !== null ? (div * 100 / mult) : (100 / mult);
+  const offset = m[5] ? (m[5] === "-" ? -parseFloat(m[6]) : parseFloat(m[6])) : 0;
+  return { startRef: m[1], estRef: m[2], workload, offset, holidaysArg: m[7] };
+}
+
+// Working-day count a WORKDAY End formula advances by, for a given estimate.
+function workdaySpanFor(est, workload, offset = 0) {
+  return (est || 0) * 100 / workload + offset;
+}
+
+/* ---- Formula builders. Every write uses the Core convention
+   (Est*100/Workload) per the agreed standard, and always the CURRENT source's
+   column letters and Holidays range. ---- */
+function buildStartChainFormula(prevRowNum) {
+  return `=WORKDAY(${CONFIG.A1.END}${prevRowNum},1,${CONFIG.HOLIDAYS_ARG})`;
+}
+function buildEndFormula(rowNum, workload) {
+  return `=WORKDAY(${CONFIG.A1.START}${rowNum},${CONFIG.A1.EST}${rowNum}*100/${workload},${CONFIG.HOLIDAYS_ARG})`;
 }
 
 function activityKey(activity) {
@@ -874,7 +1133,7 @@ async function loadData() {
   setStatus("Loading sheet…");
   try {
     if (holidaySet.size === 0) await loadHolidays();
-    const range = `'${CONFIG.SHEET_NAME}'!A2:L3000`;
+    const range = `'${CONFIG.SHEET_NAME}'!A2:${CONFIG.LAST_COL}3000`;
     // Fetch formulas too (separately) so we know which Start/End cells are
     // formula-driven (e.g. "=H4+1" for a dependent Start) and never
     // overwrite those with a literal value — see saveField() below.
@@ -889,6 +1148,7 @@ async function loadData() {
     tasks = [];
     activityColors = new Map();
     let skippedSentinel = 0;
+    let skippedAggregate = 0;
     rows.forEach((row, i) => {
       const assignee = (row[C.ASSIGNEE] || "").trim();
       const start = parseDate(row[C.START]);
@@ -899,6 +1159,10 @@ async function loadData() {
       const fRow = formulaRows[i] || [];
       const startFormulaRaw = typeof fRow[C.START] === "string" ? fRow[C.START].trim() : "";
       const endFormulaRaw = typeof fRow[C.END] === "string" ? fRow[C.END].trim() : "";
+      // Group/summary rows (e.g. Start = "=min(F5:F13)", End = "=MAX(G5:G13)")
+      // aren't tasks — they roll up the block below them. Rendering them would
+      // invent a bogus lane named after the group label, so drop them.
+      if (AGGREGATE_FORMULA_RE.test(startFormulaRaw) || AGGREGATE_FORMULA_RE.test(endFormulaRaw)) { skippedAggregate++; return; }
       const startIsFormula = startFormulaRaw.startsWith("=");
       const endIsFormula = endFormulaRaw.startsWith("=");
       const estRaw = row[C.EST] || "";
@@ -943,18 +1207,28 @@ async function loadData() {
     }
     everSeenActivities = new Set(tasks.map(t => activityKey(t.activity)));
 
+    // Option lists for the "Add task" form — always whatever the sheet
+    // actually contains right now, so no hardcoded list can go stale.
+    allActivityOptions = Array.from(new Set(tasks.map(t => activityKey(t.activity)))).sort();
+    allAssigneeOptions = Array.from(new Set(tasks.map(t => t.assignee))).sort();
+    allStatusOptions   = Array.from(new Set(tasks.map(t => (t.status || "").trim()).filter(Boolean))).sort();
+
     buildAssigneePanel();
     buildActivityPanel();
     buildLegend();
     buildLanes();
     render();
     requestAnimationFrame(() => jumpToToday(true)); // land on Today by default, no click needed
-    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""} · ${new Date().toLocaleTimeString()}`);
+    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
     setStatus("Load failed: " + err.message, true);
   }
 }
+const AGGREGATE_FORMULA_RE = /^=\s*(min|max|sum|average|arrayformula)\s*\(/i;
+let allActivityOptions = [];
+let allAssigneeOptions = [];
+let allStatusOptions = [];
 let everSeenAssignees = new Set();
 let everSeenActivities = new Set();
 
@@ -1301,6 +1575,7 @@ function render() {
 
       attachDrag(bar, t, null, lane, idx, top);
       attachTooltip(bar, t);
+      attachBarContextMenu(bar, t, lane);
       body.appendChild(bar);
     });
 
@@ -1554,7 +1829,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         lane.idxs.splice(destPos, 0, idx);
         lane.idxs.forEach((ix, r) => { tasks[ix].subRow = r; });
         manualOrder[lane.name] = lane.idxs.map(ix => tasks[ix].rowNum);
-        localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
+        saveManualOrder();
 
         // Reordering can leave a Start formula (=WORKDAY(H<prevRow>,1,...))
         // pointing at a task that's no longer immediately before it —
@@ -1569,12 +1844,12 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
           if (ok) {
             for (const fx of fixups) {
               const depOrigStart = new Date(fx.t.start), depOrigEnd = new Date(fx.t.end);
-              const newFormula = `=WORKDAY(H${fx.newPrevTask.rowNum},1,Holidays!$B$2:$B)`;
+              const newFormula = buildStartChainFormula(fx.newPrevTask.rowNum);
               await writeFormula(fx.t, "start", newFormula);
               fx.t.start = excelWorkday(fx.newPrevTask.end, 1);
               if (fx.t.endIsFormula) {
                 const parsedEnd = parseWorkdayFormula(fx.t.endFormulaRaw);
-                if (parsedEnd) fx.t.end = excelWorkday(fx.t.start, (fx.t.estNum || 0) * 100 / parsedEnd.workload);
+                if (parsedEnd) fx.t.end = excelWorkday(fx.t.start, workdaySpanFor(fx.t.estNum, parsedEnd.workload, parsedEnd.offset));
               }
               chainFormulaFixed.push({ t: fx.t, origStart: depOrigStart, origEnd: depOrigEnd });
             }
@@ -1676,7 +1951,7 @@ function findChainFormulaMismatches(lane) {
   lane.idxs.forEach((idx, i) => {
     const t = tasks[idx];
     if (!t.startIsFormula) return;
-    const m = (t.startFormulaRaw || "").match(/WORKDAY\(\s*H(\d+)/i);
+    const m = (t.startFormulaRaw || "").match(new RegExp("WORKDAY\(\s*" + CONFIG.A1.END + "(\d+)", "i"));
     if (!m) return; // not our chain-formula pattern — leave it alone
     const referencedRow = parseInt(m[1], 10);
     if (i === 0) return; // no predecessor to compare against
@@ -1695,7 +1970,7 @@ function findChainFormulaMismatches(lane) {
 // Start that references the previous task's End) is preserved and keeps
 // cascading on its own inside the sheet.
 async function saveField(t, field) {
-  const col = field === "start" ? "G" : "H";
+  const col = field === "start" ? CONFIG.A1.START : CONFIG.A1.END;
   const value = field === "start" ? fmtDate(t.start) : fmtDate(t.end);
   setStatus(`Saving row ${t.rowNum} (${field})…`, false, true);
   try {
@@ -1718,7 +1993,7 @@ async function saveField(t, field) {
 async function saveEstimate(t) {
   setStatus(`Saving row ${t.rowNum} (estimate)…`, false, true);
   try {
-    const range = `'${CONFIG.SHEET_NAME}'!I${t.rowNum}`;
+    const range = `'${CONFIG.SHEET_NAME}'!${CONFIG.A1.EST}${t.rowNum}`;
     await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
       method: "PUT",
       body: JSON.stringify({ range, majorDimension: "ROWS", values: [[String(t.estNum)]] }),
@@ -1741,7 +2016,7 @@ function recalcEstimateForResize(t) {
   const parsed = parseWorkdayFormula(t.endFormulaRaw);
   if (!parsed) return false; // no known workload — nothing to back-solve from
   const newWorkDays = dayOffset(t.end) - dayOffset(t.start) + 1;
-  const newEst = Math.round((newWorkDays * parsed.workload / 100) * 10) / 10;
+  const newEst = Math.round(((newWorkDays - parsed.offset) * parsed.workload / 100) * 10) / 10;
   if (newEst === t.estNum) return false;
   t.est = String(newEst);
   t.estNum = newEst;
@@ -1762,7 +2037,7 @@ async function saveChangedFields(t, origStart, origEnd, force) {
 // field as formula-driven — used by the recalculate modal and the bulk
 // FRD/Spec formula action below, so both stay real formulas going forward.
 async function writeFormula(t, field, formula) {
-  const col = field === "start" ? "G" : "H";
+  const col = field === "start" ? CONFIG.A1.START : CONFIG.A1.END;
   const range = `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`;
   await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
     method: "PUT",
@@ -1809,8 +2084,8 @@ async function applyFrdSpecFormulas() {
     list.forEach((t, i) => {
       if (!FRD_SPEC_ACTIVITIES.has(activityKey(t.activity).toLowerCase())) return;
       const prev = i > 0 ? list[i - 1] : null;
-      const startFormula = prev ? `=WORKDAY(H${prev.rowNum},1,Holidays!$B$2:$B)` : null;
-      const endFormula = `=WORKDAY(G${t.rowNum},I${t.rowNum}*100/${FRD_SPEC_WORKLOAD},Holidays!$B$2:$B)`;
+      const startFormula = prev ? buildStartChainFormula(prev.rowNum) : null;
+      const endFormula = buildEndFormula(t.rowNum, FRD_SPEC_WORKLOAD);
       jobs.push({ t, prev, startFormula, endFormula });
     });
   }
@@ -1864,7 +2139,7 @@ document.getElementById("btn-align-waterfall").addEventListener("click", () => {
   if (!ok) return;
   commitUndoPoint(snapshotState());
   manualOrder = {};
-  localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(manualOrder));
+  saveManualOrder();
   buildLanes();
   render();
   setStatus(`Row order reset to chronological · ${new Date().toLocaleTimeString()}`);
@@ -1995,9 +2270,9 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
   try {
     // Estimate is a plain value cell — write it if changed.
     if (t.estNum !== newEst) {
-      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!I${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
+      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!${CONFIG.A1.EST}${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
         method: "PUT",
-        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!I${t.rowNum}`, majorDimension: "ROWS", values: [[String(newEst)]] }),
+        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!${CONFIG.A1.EST}${t.rowNum}`, majorDimension: "ROWS", values: [[String(newEst)]] }),
       });
       t.est = String(newEst);
       t.estNum = newEst;
@@ -2008,7 +2283,7 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
     // own from the Estimate). If the cell was a plain date, we write the
     // formula now — converting it into a formula-driven End going forward.
     if (!parsed) {
-      const newFormula = `=WORKDAY(G${t.rowNum},I${t.rowNum}*100/${newWorkload},Holidays!$B$2:$B)`;
+      const newFormula = buildEndFormula(t.rowNum, newWorkload);
       await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!H${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
         method: "PUT",
         body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!H${t.rowNum}`, majorDimension: "ROWS", values: [[newFormula]] }),
@@ -2090,7 +2365,7 @@ document.getElementById("tm-chain-start").addEventListener("click", async () => 
   }
   const prev = list[pos - 1];
   const newStart = excelWorkday(prev.end, 1);
-  const formula = `=WORKDAY(H${prev.rowNum},1,Holidays!$B$2:$B)`;
+  const formula = buildStartChainFormula(prev.rowNum);
 
   commitUndoPoint(snapshotState());
   const origStart = new Date(t.start), origEnd = new Date(t.end);
@@ -2100,7 +2375,7 @@ document.getElementById("tm-chain-start").addEventListener("click", async () => 
     t.start = newStart;
     // If End is a standard WORKDAY formula, it recomputes off the new Start.
     const parsedEnd = parseWorkdayFormula(t.endFormulaRaw);
-    if (parsedEnd) t.end = excelWorkday(t.start, (t.estNum || 0) * 100 / parsedEnd.workload);
+    if (parsedEnd) t.end = excelWorkday(t.start, workdaySpanFor(t.estNum, parsedEnd.workload, parsedEnd.offset));
     preview.innerHTML = `Start chained to "${escapeHtml(prev.label)}" (row ${prev.rowNum}) → new Start: <b>${fmtDate(t.start)}</b>`;
     document.getElementById("tm-start-formula").textContent = t.startFormulaRaw;
     document.getElementById("tm-start").textContent = fmtDate(t.start);
@@ -2113,6 +2388,430 @@ document.getElementById("tm-chain-start").addEventListener("click", async () => 
     setStatus("Save failed — reload to resync: " + err.message, true);
     t.start = origStart; t.end = origEnd;
     preview.innerHTML = "Save failed — " + escapeHtml(err.message);
+  }
+});
+
+/* ============================================================
+   Product line selector — each entry in SOURCES is a different
+   spreadsheet/tab with its own column layout. Switching reloads the page
+   rather than hot-swapping state: holidays, activity colours, filter
+   selections, manual row order and the undo stack are all source-specific,
+   and a full reload is the only way to guarantee none of them leak across.
+   The OAuth token lives in localStorage, so the reload does not re-prompt.
+   ============================================================ */
+function buildProductLinePicker() {
+  const sel = document.getElementById("product-line");
+  sel.innerHTML = Object.entries(SOURCES)
+    .map(([id, src]) => `<option value="${id}">${escapeHtml(src.LABEL)}</option>`)
+    .join("");
+  sel.value = sourceId;
+  document.getElementById("page-title").textContent = `${CONFIG.LABEL} — Timeline`;
+  document.getElementById("signin-source").textContent = CONFIG.SHEET_NAME;
+  document.title = `${CONFIG.LABEL} — Timeline`;
+  sel.addEventListener("change", () => {
+    localStorage.setItem(SOURCE_STORAGE_KEY, sel.value);
+    location.reload();
+  });
+}
+buildProductLinePicker();
+
+/* ============================================================
+   Right-click a bar → add a task above or below it.
+
+   "Above" / "below" mean position in the lane's priority order (what you see
+   on screen), not sheet row order. The new task is inserted as a real new
+   sheet row physically adjacent to the clicked task's row, so Google Sheets
+   re-points every existing formula reference for us; only the formulas we
+   write ourselves need post-insert row numbers.
+
+   Chaining follows the convention already used everywhere else in this sheet:
+   a dependent Start is =WORKDAY(<predecessor End>,1,Holidays), i.e. the next
+   working day after the predecessor ends.
+   ============================================================ */
+let ctxTask = null;   // task the context menu was opened on
+let ctxLane = null;
+let ntWhere = null;   // "above" | "below"
+let ntBusy = false;
+
+function closeContextMenu() {
+  document.getElementById("bar-context-menu").classList.remove("open");
+}
+
+function attachBarContextMenu(bar, t, lane) {
+  bar.addEventListener("contextmenu", (e) => {
+    if (readOnlyMode) return; // nothing here could be saved — leave the native menu
+    e.preventDefault();
+    ctxTask = t; ctxLane = lane;
+    const menu = document.getElementById("bar-context-menu");
+    menu.classList.add("open");
+    // Clamp inside the viewport so a right-click near an edge stays usable.
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.max(4, Math.min(e.clientX, window.innerWidth - r.width - 8)) + "px";
+    menu.style.top = Math.max(4, Math.min(e.clientY, window.innerHeight - r.height - 8)) + "px";
+  });
+}
+
+document.getElementById("bar-context-menu").addEventListener("click", (e) => {
+  const where = e.target.dataset && e.target.dataset.where;
+  if (!where || !ctxTask) return;
+  closeContextMenu();
+  openNewTaskModal(ctxTask, ctxLane, where);
+});
+window.addEventListener("click", (e) => {
+  if (!e.target.closest || !e.target.closest("#bar-context-menu")) closeContextMenu();
+});
+window.addEventListener("scroll", closeContextMenu, true);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeContextMenu(); });
+
+// The clicked task's neighbours in lane (priority) order — what the new task
+// chains off, and what it pushes out.
+function laneNeighbours(t, lane) {
+  let order;
+  if (lane) {
+    order = lane.idxs.map((i) => tasks[i]);
+  } else {
+    // No lane (e.g. replaying a redo while the task is filtered out of view):
+    // fall back to the same per-assignee ordering buildLanes would have used.
+    order = orderedTasksByAssignee().get(t.assignee) || [t];
+  }
+  const pos = order.indexOf(t);
+  return {
+    prev: pos > 0 ? order[pos - 1] : null,
+    next: pos >= 0 && pos < order.length - 1 ? order[pos + 1] : null,
+  };
+}
+
+function laneForTask(t) {
+  return lanes.find((l) => l.idxs.some((i) => tasks[i] === t)) || null;
+}
+
+function fillSelect(el, options, selected) {
+  el.innerHTML = options.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+  if (selected && !options.includes(selected)) {
+    el.insertAdjacentHTML("afterbegin", `<option value="${escapeHtml(selected)}">${escapeHtml(selected)}</option>`);
+  }
+  el.value = selected || (options[0] || "");
+}
+
+function openNewTaskModal(t, lane, where) {
+  ctxTask = t; ctxLane = lane; ntWhere = where; ntBusy = false;
+
+  const { prev } = laneNeighbours(t, lane);
+  document.getElementById("nt-title").textContent = where === "above" ? "Add task above" : "Add task below";
+  document.getElementById("nt-sub").textContent =
+    (where === "above" ? "Before: " : "After: ") + t.label + " · " + t.assignee;
+
+  document.getElementById("nt-name").value = "";
+  document.getElementById("nt-est").value = "";
+  // Default workload: inherit the clicked task's, when its End formula says
+  // what that is; otherwise 100%.
+  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+  document.getElementById("nt-workload").value = parsed ? parsed.workload : 100;
+
+  fillSelect(document.getElementById("nt-activity"), allActivityOptions, activityKey(t.activity));
+  fillSelect(document.getElementById("nt-assignee"), allAssigneeOptions, t.assignee);
+  fillSelect(document.getElementById("nt-status"), allStatusOptions, (t.status || "").trim());
+
+  // Feature/Improvement/Support is inherited from the clicked task, not entered.
+  document.getElementById("nt-feature").textContent = t.feature || "(blank)";
+
+  const warn = document.getElementById("nt-warn");
+  if (where === "above" && !prev) {
+    warn.style.display = "block";
+    warn.textContent = `"${t.label}" is first in this lane, so there is no earlier task to chain from. The new task takes over its current Start date (${fmtDate(t.start)}).`;
+  } else {
+    warn.style.display = "none";
+  }
+
+  const createBtn = document.getElementById("nt-create");
+  createBtn.disabled = false;
+  createBtn.textContent = "Create task";
+  updateNewTaskPreview();
+  document.getElementById("new-task-backdrop").classList.add("open");
+  document.getElementById("nt-name").focus();
+}
+
+function closeNewTaskModal() {
+  if (ntBusy) return; // a write is in flight — don't let the modal vanish mid-save
+  document.getElementById("new-task-backdrop").classList.remove("open");
+  ntWhere = null;
+}
+
+// Reads the form fields, or returns { error }.
+function readNewTaskForm() {
+  const name = document.getElementById("nt-name").value.trim();
+  const est = parseFloat(document.getElementById("nt-est").value);
+  const workload = parseFloat(document.getElementById("nt-workload").value);
+  if (!name) return { error: "Enter a task name." };
+  if (isNaN(est) || est < 0) return { error: "Enter a valid estimate." };
+  if (isNaN(workload) || workload <= 0) return { error: "Enter a workload greater than 0%." };
+  return {
+    name, est, workload,
+    activity: document.getElementById("nt-activity").value,
+    assignee: document.getElementById("nt-assignee").value,
+    status: document.getElementById("nt-status").value,
+  };
+}
+
+// Works out the resulting dates for a given clicked task + form. Pure, so the
+// create path and a redo replay produce identical results.
+function planTaskInsert(t, lane, where, form) {
+  if (!t || !where) return { error: "No task selected." };
+  if (form.error) return form;
+
+  const { prev, next } = laneNeighbours(t, lane);
+  // anchor  = the task the new one starts after.
+  // shifted = the task the new one pushes out.
+  const anchor = where === "above" ? prev : t;
+  const shifted = where === "above" ? t : next;
+
+  const newStart = anchor ? excelWorkday(anchor.end, 1) : new Date(t.start);
+  const newEnd = excelWorkday(newStart, workdaySpanFor(form.est, form.workload));
+  const shiftedNewStart = shifted ? excelWorkday(newEnd, 1) : null;
+
+  return Object.assign({}, form, { anchor, shifted, newStart, newEnd, shiftedNewStart });
+}
+
+function computeNewTaskPlan() {
+  return planTaskInsert(ctxTask, ctxLane, ntWhere, readNewTaskForm());
+}
+
+function updateNewTaskPreview() {
+  const preview = document.getElementById("nt-preview");
+  const createBtn = document.getElementById("nt-create");
+  const plan = computeNewTaskPlan();
+  if (plan.error) {
+    preview.textContent = plan.error;
+    createBtn.disabled = true;
+    return;
+  }
+  createBtn.disabled = false;
+  const lines = [
+    `New task: <b>${fmtDate(plan.newStart)}</b> &rarr; <b>${fmtDate(plan.newEnd)}</b>` +
+      (plan.anchor ? ` (first working day after "${escapeHtml(plan.anchor.label)}" ends)` : ""),
+  ];
+  if (plan.shifted) {
+    lines.push(`"${escapeHtml(plan.shifted.label)}" Start moves ${fmtDate(plan.shifted.start)} &rarr; <b>${fmtDate(plan.shiftedNewStart)}</b>; anything chained behind it follows automatically in the sheet.`);
+  }
+  preview.innerHTML = lines.join("<br>");
+}
+
+["nt-name", "nt-est", "nt-workload", "nt-activity", "nt-assignee", "nt-status"].forEach((id) => {
+  const el = document.getElementById(id);
+  el.addEventListener("input", updateNewTaskPreview);
+  el.addEventListener("change", updateNewTaskPreview);
+});
+document.getElementById("nt-cancel").addEventListener("click", closeNewTaskModal);
+document.getElementById("new-task-backdrop").addEventListener("click", (e) => {
+  if (e.target.id === "new-task-backdrop") closeNewTaskModal();
+});
+
+// Manual row order is stored as sheet row numbers, so inserting a row
+// invalidates every stored number at or below the insert point. Remap them
+// all, then slot the new row into the affected lane's order.
+function remapManualOrderForInsert(insertRow, newRow, assignee, afterRowNum) {
+  const shift = (r) => (r >= insertRow ? r + 1 : r);
+  Object.keys(manualOrder).forEach((name) => {
+    manualOrder[name] = (manualOrder[name] || []).map(shift);
+  });
+  const list = manualOrder[assignee];
+  if (!list || !list.length) { saveManualOrder(); return; } // no saved order — chronological sort places it
+  if (!list.includes(newRow)) {
+    if (afterRowNum === null) {
+      list.unshift(newRow);
+    } else {
+      const at = list.indexOf(afterRowNum);
+      if (at === -1) list.push(newRow); else list.splice(at + 1, 0, newRow);
+    }
+  }
+  saveManualOrder();
+}
+
+async function insertSheetRow(insertRow) {
+  await sheetsFetch(":batchUpdate", {
+    method: "POST",
+    body: JSON.stringify({
+      requests: [{
+        insertDimension: {
+          range: { sheetId: CONFIG.SHEET_ID, dimension: "ROWS", startIndex: insertRow - 1, endIndex: insertRow },
+          // Copy the previous row's formatting — except right under row 1,
+          // where "previous row" is the header and would drag its styling in.
+          inheritFromBefore: insertRow > 2,
+        },
+      }],
+    }),
+  });
+}
+
+async function deleteSheetRow(rowNum) {
+  await sheetsFetch(":batchUpdate", {
+    method: "POST",
+    body: JSON.stringify({
+      requests: [{
+        deleteDimension: {
+          range: { sheetId: CONFIG.SHEET_ID, dimension: "ROWS", startIndex: rowNum - 1, endIndex: rowNum },
+        },
+      }],
+    }),
+  });
+}
+
+async function writeCells(data) {
+  if (!data.length) return;
+  await sheetsFetch("/values:batchUpdate", {
+    method: "POST",
+    body: JSON.stringify({ valueInputOption: "USER_ENTERED", data }),
+  });
+}
+
+/* Performs the whole insert against the sheet and returns the history entry
+   that reverses it. Shared by the Create button and by a redo replay, so both
+   produce byte-identical results.
+
+   1. Insert the physical sheet row adjacent to the clicked task's row. Sheets
+      rewrites every existing formula reference across the workbook to match,
+      so only the formulas we write ourselves need post-insert row numbers.
+   2. Write the new row's values and its own chained Start/End formulas.
+   3. Re-chain whatever the new task displaced, so its Start follows the new
+      task's End. Everything behind that cascades inside the sheet. */
+async function performTaskInsert(clicked, where, form) {
+  const lane = laneForTask(clicked);
+  const plan = planTaskInsert(clicked, lane, where, form);
+  if (plan.error) throw new Error(plan.error);
+
+  const manualOrderBefore = JSON.parse(JSON.stringify(manualOrder));
+  // Captured pre-insert, so undo can put the displaced task's Start cell back
+  // byte-for-byte. Deleting the row would otherwise leave it as =WORKDAY(#REF!…).
+  const shiftedRestore = plan.shifted ? {
+    rowNum: plan.shifted.rowNum,
+    value: plan.shifted.startIsFormula && plan.shifted.startFormulaRaw
+      ? plan.shifted.startFormulaRaw
+      : fmtDate(plan.shifted.start),
+  } : null;
+
+  const insertRow = where === "above" ? clicked.rowNum : clicked.rowNum + 1;
+  setStatus("Inserting row…", false, true);
+  await insertSheetRow(insertRow);
+
+  const newRow = insertRow;
+  const shift = (r) => (r >= insertRow ? r + 1 : r);
+  const A = CONFIG.A1;
+  const data = [];
+  const put = (col, row, value) => {
+    if (!col) return;
+    data.push({ range: `'${CONFIG.SHEET_NAME}'!${col}${row}`, values: [[value]] });
+  };
+
+  put(A.ASSIGNEE, newRow, plan.assignee);
+  put(A.TASKS,    newRow, plan.name);
+  put(A.FEATURE,  newRow, clicked.feature || "");   // inherited from the clicked task
+  put(A.ACTIVITY, newRow, plan.activity);
+  put(A.EST,      newRow, plan.est);
+  put(A.STATUS,   newRow, plan.status);
+  put(A.START,    newRow, plan.anchor ? buildStartChainFormula(shift(plan.anchor.rowNum)) : fmtDate(plan.newStart));
+  put(A.END,      newRow, buildEndFormula(newRow, plan.workload));
+  if (plan.shifted) put(A.START, shift(plan.shifted.rowNum), buildStartChainFormula(newRow));
+
+  setStatus("Writing new task…", false, true);
+  await writeCells(data);
+
+  remapManualOrderForInsert(
+    insertRow, newRow, plan.assignee,
+    where === "above" ? (plan.anchor ? shift(plan.anchor.rowNum) : null) : shift(clicked.rowNum)
+  );
+
+  // The reversal record. clickedRowNum is the PRE-insert row of the clicked
+  // task, which is what the sheet is back to once the row is deleted — so a
+  // redo can find the same task again and replay the identical plan.
+  return {
+    kind: "insert",
+    where,
+    clickedRowNum: clicked.rowNum,
+    form: { name: plan.name, est: plan.est, workload: plan.workload, activity: plan.activity, assignee: plan.assignee, status: plan.status },
+    shiftedRestore,
+    manualOrderBefore,
+    insertRow,
+    label: plan.name,
+  };
+}
+
+// Undo: delete the row again, put the displaced task's Start cell back to its
+// pre-insert content, and shift every other history entry's row numbers down.
+async function undoRowInsert(entry) {
+  setStatus(`Removing "${entry.label}"…`, false, true);
+  try {
+    await deleteSheetRow(entry.insertRow);
+    if (entry.shiftedRestore) {
+      await writeCells([{
+        range: `'${CONFIG.SHEET_NAME}'!${CONFIG.A1.START}${entry.shiftedRestore.rowNum}`,
+        values: [[entry.shiftedRestore.value]],
+      }]);
+    }
+    manualOrder = JSON.parse(JSON.stringify(entry.manualOrderBefore));
+    saveManualOrder();
+    remapHistory(entry.insertRow, -1, entry);
+    await loadData();
+    setStatus(`Removed "${entry.label}" · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Undo of the added task failed — reload to resync: " + err.message, true);
+  }
+}
+
+// Redo: find the clicked task at its pre-insert row and replay the same insert.
+async function redoRowInsert(entry) {
+  setStatus(`Re-adding "${entry.label}"…`, false, true);
+  try {
+    const clicked = tasks.find((t) => t.rowNum === entry.clickedRowNum);
+    if (!clicked) throw new Error(`row ${entry.clickedRowNum} is no longer in the sheet`);
+    const fresh = await performTaskInsert(clicked, entry.where, entry.form);
+    // Replay can only land on the same row, but keep the entry authoritative.
+    Object.assign(entry, fresh);
+    remapHistory(entry.insertRow, +1, entry);
+    await loadData();
+    setStatus(`Re-added "${entry.label}" at row ${entry.insertRow} · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Redo of the added task failed — reload to resync: " + err.message, true);
+  }
+}
+
+document.getElementById("nt-create").addEventListener("click", async () => {
+  const form = readNewTaskForm();
+  const plan = planTaskInsert(ctxTask, ctxLane, ntWhere, form);
+  if (plan.error) { updateNewTaskPreview(); return; }
+  const clicked = ctxTask, where = ntWhere;
+
+  const createBtn = document.getElementById("nt-create");
+  ntBusy = true;
+  createBtn.disabled = true;
+  createBtn.textContent = "Creating…";
+
+  try {
+    const entry = await performTaskInsert(clicked, where, form);
+
+    // The insert goes onto the undo stack as a reversible step of its own.
+    // Existing entries were recorded against pre-insert row numbers, so shift
+    // them up to keep an older drag undoable after this.
+    remapHistory(entry.insertRow, +1, entry);
+    undoStack.push(entry);
+    if (undoStack.length > MAX_HISTORY) undoStack.shift();
+    redoStack = [];
+    updateUndoRedoButtons();
+
+    ntBusy = false;
+    closeNewTaskModal();
+    await loadData(); // full resync — every row below the insert has a new row number
+    setStatus(`Added "${entry.label}" at row ${entry.insertRow} · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    ntBusy = false;
+    createBtn.disabled = false;
+    createBtn.textContent = "Create task";
+    const warn = document.getElementById("nt-warn");
+    warn.style.display = "block";
+    warn.textContent = "Create failed — reload from the sheet to check what landed: " + err.message;
+    setStatus("Create failed: " + err.message, true);
   }
 });
 
