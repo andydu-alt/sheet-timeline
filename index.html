@@ -1857,6 +1857,21 @@ function render() {
       bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
         <div class="handle left"></div><div class="handle right"></div>`;
 
+      // When the label text spills past the bar's own right edge (see comment
+      // above), the true end-date handle sits well BEFORE the visible tail of
+      // the text — a user trying to resize "from the end" naturally grabs
+      // where the label visually stops, misses the real 8px handle, and the
+      // drag never starts. Extending the right handle's hit zone out to cover
+      // the overflow makes wherever the label visually ends draggable too,
+      // without moving the handle's true anchor (left edge stays put).
+      const overflowPx = Math.max(0, measureTextWidth(fullText) - (width - 16));
+      if (overflowPx > 0) {
+        const rightHandle = bar.querySelector(".handle.right");
+        const buffer = 4;
+        rightHandle.style.width = (8 + overflowPx + buffer) + "px";
+        rightHandle.style.right = -(overflowPx + buffer) + "px";
+      }
+
       attachDrag(bar, t, null, lane, idx, top);
       attachTooltip(bar, t);
       attachBarContextMenu(bar, t, lane);
@@ -2794,6 +2809,11 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
         const shiftCols = dayOffset(t.end) - dayOffset(origEnd);
         if (chain.length && shiftCols !== 0) {
           const verb = shiftCols > 0 ? "later" : "earlier";
+          // Same mobile-repaint hazard as the drag-reorder confirm()s above —
+          // this fires right after the estimate/workload save while the
+          // task-detail modal is still open; wait for a committed frame
+          // first so the underlying page isn't left stuck mid-transition.
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
           const ok = window.confirm(
             `${Math.abs(shiftCols)} workday(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount (waterfall) to keep the dependency intact?`
           );
