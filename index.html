@@ -411,8 +411,14 @@ const SOURCES = {
     LAST_COL: "L",
     HOLIDAYS_RANGE: "Holidays!B1:B300",
     HOLIDAYS_ARG: "Holidays!$B$2:$B",
-    COL: { ASSIGNEE:0, TASKS:1, JIRA:2, FEATURE:3, ACTIVITY:4, START:5, END:6, EST:7, DEPT:-1, FORECAST:-1, STATUS:10, NAMEINPLAN:11 },
-    A1:  { ASSIGNEE:"A", JIRA:"C", FEATURE:"D", TASKS:"B", ACTIVITY:"E", START:"F", END:"G", EST:"H", STATUS:"K" },
+    // Status is column I. Note that this sheet's trailing headers do not line up
+    // with the data underneath them — I has a blank header but holds the status,
+    // so the column is mapped by position, not by header text.
+    COL: { ASSIGNEE:0, TASKS:1, JIRA:2, FEATURE:3, ACTIVITY:4, START:5, END:6, EST:7, STATUS:8, DEPT:-1, FORECAST:-1, NAMEINPLAN:-1 },
+    A1:  { ASSIGNEE:"A", JIRA:"C", FEATURE:"D", TASKS:"B", ACTIVITY:"E", START:"F", END:"G", EST:"H", STATUS:"I" },
+    // Fixed set of accepted values, so the Add-task dropdown can't offer the
+    // stray values ("On train", …) that are already sitting in this column.
+    STATUS_OPTIONS: ["Done", "In Progress", "Not Start"],
   },
 };
 
@@ -1211,7 +1217,11 @@ async function loadData() {
     // actually contains right now, so no hardcoded list can go stale.
     allActivityOptions = Array.from(new Set(tasks.map(t => activityKey(t.activity)))).sort();
     allAssigneeOptions = Array.from(new Set(tasks.map(t => t.assignee))).sort();
-    allStatusOptions   = Array.from(new Set(tasks.map(t => (t.status || "").trim()).filter(Boolean))).sort();
+    // Status: a fixed accepted set when the source declares one, otherwise
+    // whatever the sheet already contains.
+    allStatusOptions   = CONFIG.STATUS_OPTIONS
+      ? CONFIG.STATUS_OPTIONS.slice()
+      : Array.from(new Set(tasks.map(t => (t.status || "").trim()).filter(Boolean))).sort();
 
     buildAssigneePanel();
     buildActivityPanel();
@@ -2485,10 +2495,20 @@ function laneForTask(t) {
   return lanes.find((l) => l.idxs.some((i) => tasks[i] === t)) || null;
 }
 
-function fillSelect(el, options, selected) {
+// `strict` means the option list is a closed set (see STATUS_OPTIONS): a value
+// inherited from the clicked task that isn't in the set is NOT added as an
+// option — the field falls back to blank so it has to be chosen deliberately,
+// rather than silently copying a stray value into the new row.
+function fillSelect(el, options, selected, strict) {
   el.innerHTML = options.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
-  if (selected && !options.includes(selected)) {
+  const known = options.includes(selected);
+  if (selected && !known && !strict) {
     el.insertAdjacentHTML("afterbegin", `<option value="${escapeHtml(selected)}">${escapeHtml(selected)}</option>`);
+  }
+  if (strict && !known) {
+    el.insertAdjacentHTML("afterbegin", `<option value="">— select —</option>`);
+    el.value = "";
+    return;
   }
   el.value = selected || (options[0] || "");
 }
@@ -2510,7 +2530,7 @@ function openNewTaskModal(t, lane, where) {
 
   fillSelect(document.getElementById("nt-activity"), allActivityOptions, activityKey(t.activity));
   fillSelect(document.getElementById("nt-assignee"), allAssigneeOptions, t.assignee);
-  fillSelect(document.getElementById("nt-status"), allStatusOptions, (t.status || "").trim());
+  fillSelect(document.getElementById("nt-status"), allStatusOptions, (t.status || "").trim(), !!CONFIG.STATUS_OPTIONS);
 
   // Feature/Improvement/Support is inherited from the clicked task, not entered.
   document.getElementById("nt-feature").textContent = t.feature || "(blank)";
