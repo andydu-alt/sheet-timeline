@@ -136,6 +136,14 @@
   #btn-drawer-toggle{display:none;}
   #drawer-backdrop{display:none;}
 
+  /* iOS Safari auto-zooms the ENTIRE page on focus of any input/select/
+     textarea whose font-size is under 16px — every field below (task-detail
+     modal, add-task modal, filter search boxes) was 12-13px, so tapping into
+     any of them zoomed the whole viewport. !important because several of
+     those rules are scoped (e.g. "#task-modal .field input") and would
+     otherwise need matching specificity here. */
+  body.mobile-mode input, body.mobile-mode select, body.mobile-mode textarea{font-size:16px !important;}
+
   body.mobile-mode #toolbar{padding:8px 12px;gap:8px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;}
   body.mobile-mode #toolbar h1{display:none;}
   body.mobile-mode #btn-drawer-toggle{display:inline-flex;min-height:40px;padding:8px 14px;font-size:14px;}
