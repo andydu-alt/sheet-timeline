@@ -307,6 +307,7 @@
 <div id="mobile-vscroll"><div id="mobile-vscroll-thumb"></div></div>
 
 <div id="tooltip"></div>
+<datalist id="feature-options"></datalist>
 
 <div id="bar-context-menu">
   <button data-where="above">Add task above</button>
@@ -343,7 +344,7 @@
     </div>
     <div class="field">
       <label for="nt-feature">Feature/Improvement/Support</label>
-      <input type="text" id="nt-feature" placeholder="e.g. Atomic Spec">
+      <input type="text" id="nt-feature" list="feature-options" placeholder="Pick existing or type a new one" autocomplete="off">
     </div>
     <div class="preview" id="nt-preview"></div>
     <div class="warn" id="nt-warn" style="display:none;"></div>
@@ -383,7 +384,7 @@
       </div>
       <div class="field">
         <label for="tm-feature">Feature/Improvement/Support</label>
-        <input type="text" id="tm-feature" placeholder="e.g. Atomic Spec">
+        <input type="text" id="tm-feature" list="feature-options" placeholder="Pick existing or type a new one" autocomplete="off">
       </div>
       <div class="warn" id="tm-details-warn" style="display:none;"></div>
       <div class="actions">
@@ -1301,6 +1302,8 @@ async function loadData() {
     allStatusOptions   = CONFIG.STATUS_OPTIONS
       ? CONFIG.STATUS_OPTIONS.slice()
       : Array.from(new Set(tasks.map(t => (t.status || "").trim()).filter(Boolean))).sort();
+    allFeatureOptions  = Array.from(new Set(tasks.map(t => (t.feature || "").trim()).filter(Boolean))).sort();
+    buildFeatureDatalist();
 
     buildAssigneePanel();
     buildActivityPanel();
@@ -1318,6 +1321,16 @@ const AGGREGATE_FORMULA_RE = /^=\s*(min|max|sum|average|arrayformula)\s*\(/i;
 let allActivityOptions = [];
 let allAssigneeOptions = [];
 let allStatusOptions = [];
+let allFeatureOptions = [];
+
+// Feature/Improvement/Support is free text (see feedback that a closed
+// dropdown was too restrictive for it), so it uses a <datalist> rather than
+// a <select> — a dropdown of existing values that still accepts anything
+// typed. Shared by both the Add-task and task-detail forms via list="".
+function buildFeatureDatalist() {
+  document.getElementById("feature-options").innerHTML =
+    allFeatureOptions.map((f) => `<option value="${escapeHtml(f)}"></option>`).join("");
+}
 let everSeenAssignees = new Set();
 let everSeenActivities = new Set();
 
@@ -2488,17 +2501,17 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
     // formula now — converting it into a formula-driven End going forward.
     if (!parsed) {
       const newFormula = buildEndFormula(t.rowNum, newWorkload);
-      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!H${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
+      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!${CONFIG.A1.END}${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
         method: "PUT",
-        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!H${t.rowNum}`, majorDimension: "ROWS", values: [[newFormula]] }),
+        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!${CONFIG.A1.END}${t.rowNum}`, majorDimension: "ROWS", values: [[newFormula]] }),
       });
       t.endFormulaRaw = newFormula;
       t.endIsFormula = true;
     } else if (newWorkload !== parsed.workload) {
       const newFormula = `=WORKDAY(${parsed.startRef},${parsed.estRef}*100/${newWorkload},${parsed.holidaysArg})`;
-      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!H${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
+      await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!${CONFIG.A1.END}${t.rowNum}`)}?valueInputOption=USER_ENTERED`, {
         method: "PUT",
-        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!H${t.rowNum}`, majorDimension: "ROWS", values: [[newFormula]] }),
+        body: JSON.stringify({ range: `'${CONFIG.SHEET_NAME}'!${CONFIG.A1.END}${t.rowNum}`, majorDimension: "ROWS", values: [[newFormula]] }),
       });
       t.endFormulaRaw = newFormula;
       t.endIsFormula = true;
