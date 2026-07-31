@@ -100,16 +100,17 @@
 
   #tooltip{position:fixed;background:#111827;color:#fff;font-size:12px;padding:8px 10px;border-radius:6px;pointer-events:none;z-index:100;max-width:320px;line-height:1.5;display:none;box-shadow:0 4px 12px rgba(0,0,0,.3);}
 
-  #task-modal-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;align-items:center;justify-content:center;}
+  #task-modal-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;align-items:center;justify-content:center;padding:20px;overflow-y:auto;}
   #task-modal-backdrop.open{display:flex;}
-  #task-modal{background:#fff;border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,.3);width:420px;max-width:92vw;padding:20px;}
+  #task-modal{background:#fff;border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,.3);width:420px;max-width:92vw;padding:20px;box-sizing:border-box;}
   #task-modal h2{font-size:15px;margin:0 0 4px;}
   #task-modal .sub{font-size:12px;color:var(--muted);margin-bottom:14px;}
   #task-modal .row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--border);}
   #task-modal .row span:first-child{color:var(--muted);}
   #task-modal .field{margin-top:12px;}
   #task-modal .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
-  #task-modal .field input{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:13px;}
+  #task-modal .field input, #task-modal .field select{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;}
+  #task-modal .details-section{margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border);}
   #task-modal .preview{margin-top:14px;padding:10px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;font-size:12.5px;}
   #task-modal .preview b{color:#0369a1;}
   #task-modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
@@ -332,7 +333,10 @@
       <label for="nt-status">Status</label>
       <select id="nt-status"></select>
     </div>
-    <div class="row"><span>Feature/Improvement/Support</span><span id="nt-feature">–</span></div>
+    <div class="field">
+      <label for="nt-feature">Feature/Improvement/Support</label>
+      <input type="text" id="nt-feature" placeholder="e.g. Atomic Spec">
+    </div>
     <div class="preview" id="nt-preview"></div>
     <div class="warn" id="nt-warn" style="display:none;"></div>
     <div class="actions">
@@ -346,6 +350,34 @@
   <div id="task-modal">
     <h2 id="tm-title">Task</h2>
     <div class="sub" id="tm-sub"></div>
+
+    <div class="details-section">
+      <div class="field">
+        <label for="tm-name">Task name</label>
+        <input type="text" id="tm-name">
+      </div>
+      <div class="field">
+        <label for="tm-activity-select">Activity</label>
+        <select id="tm-activity-select"></select>
+      </div>
+      <div class="field">
+        <label for="tm-assignee-select">Assignee</label>
+        <select id="tm-assignee-select"></select>
+      </div>
+      <div class="field">
+        <label for="tm-status-select">Status</label>
+        <select id="tm-status-select"></select>
+      </div>
+      <div class="field">
+        <label for="tm-feature">Feature/Improvement/Support</label>
+        <input type="text" id="tm-feature" placeholder="e.g. Atomic Spec">
+      </div>
+      <div class="warn" id="tm-details-warn" style="display:none;"></div>
+      <div class="actions">
+        <button id="tm-save-details">Save details</button>
+      </div>
+    </div>
+
     <div class="row" id="tm-jira-row" style="display:none;"><span>Jira</span><span id="tm-jira">–</span></div>
     <div class="row"><span>Start</span><span id="tm-start">–</span></div>
     <div class="row"><span>End</span><span id="tm-end">–</span></div>
@@ -551,6 +583,13 @@ function snapshotState() {
       startIsFormula: t.startIsFormula,
       endFormulaRaw: t.endFormulaRaw,
       endIsFormula: t.endIsFormula,
+      // Task-detail edits (name/feature/activity/assignee/status) also flow
+      // through commitUndoPoint, so they need to round-trip here too.
+      taskName: t.taskName,
+      feature: t.feature,
+      activity: t.activity,
+      assignee: t.assignee,
+      status: t.status,
     })),
     manualOrder: JSON.parse(JSON.stringify(manualOrder)),
   };
@@ -647,7 +686,12 @@ async function applySnapshot(snapshot) {
     const endChanged = t.end.getTime() !== d.end ||
       (t.endFormulaRaw || "") !== (d.endFormulaRaw || "") || t.endIsFormula !== d.endIsFormula;
     const estChanged = t.estNum !== d.estNum || (t.est || "") !== (d.est || "");
-    if (!startChanged && !endChanged && !estChanged) return;
+    const nameChanged = (t.taskName || "") !== (d.taskName || "");
+    const featureChanged = (t.feature || "") !== (d.feature || "");
+    const activityChanged = (t.activity || "") !== (d.activity || "");
+    const assigneeChanged = (t.assignee || "") !== (d.assignee || "");
+    const statusChanged = (t.status || "") !== (d.status || "");
+    if (!startChanged && !endChanged && !estChanged && !nameChanged && !featureChanged && !activityChanged && !assigneeChanged && !statusChanged) return;
 
     // Restore the in-memory state so the modal + bars reflect the undone value.
     t.start = new Date(d.start);
@@ -658,11 +702,23 @@ async function applySnapshot(snapshot) {
     t.startIsFormula = d.startIsFormula;
     t.endFormulaRaw = d.endFormulaRaw;
     t.endIsFormula = d.endIsFormula;
+    t.taskName = d.taskName;
+    t.feature = d.feature;
+    t.activity = d.activity;
+    t.assignee = d.assignee;
+    t.status = d.status;
+    t.label = t.feature || t.taskName || t.activity || "Task";
+    t.color = colorForActivity(t.activity);
 
     const fields = new Set();
     if (startChanged) fields.add("start");
     if (endChanged) fields.add("end");
     if (estChanged) fields.add("est");
+    if (nameChanged) fields.add("name");
+    if (featureChanged) fields.add("feature");
+    if (activityChanged) fields.add("activity");
+    if (assigneeChanged) fields.add("assignee");
+    if (statusChanged) fields.add("status");
     writes.push({ t, fields });
   });
   manualOrder = snapshot.manualOrder;
@@ -681,7 +737,12 @@ async function restoreCell(t, field) {
   let col, value;
   if (field === "start") { col = CONFIG.A1.START; value = t.startIsFormula && t.startFormulaRaw ? t.startFormulaRaw : fmtDate(t.start); }
   else if (field === "end") { col = CONFIG.A1.END; value = t.endIsFormula && t.endFormulaRaw ? t.endFormulaRaw : fmtDate(t.end); }
-  else { col = CONFIG.A1.EST; value = t.estNum !== null && t.estNum !== undefined ? String(t.estNum) : (t.est || ""); }
+  else if (field === "est") { col = CONFIG.A1.EST; value = t.estNum !== null && t.estNum !== undefined ? String(t.estNum) : (t.est || ""); }
+  else if (field === "name") { col = CONFIG.A1.TASKS; value = t.taskName || ""; }
+  else if (field === "feature") { col = CONFIG.A1.FEATURE; value = t.feature || ""; }
+  else if (field === "activity") { col = CONFIG.A1.ACTIVITY; value = t.activity || ""; }
+  else if (field === "assignee") { col = CONFIG.A1.ASSIGNEE; value = t.assignee || ""; }
+  else { col = CONFIG.A1.STATUS; value = t.status || ""; }
   const range = `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`;
   setStatus(`Restoring row ${t.rowNum} (${field})…`, false, true);
   try {
@@ -2174,6 +2235,14 @@ function openTaskModal(t) {
   document.getElementById("tm-title").textContent = t.label;
   document.getElementById("tm-sub").textContent = `${t.assignee}${t.activity ? " • " + t.activity : ""}`;
 
+  // Details — same fields as the "Add task" form, prepopulated from this task.
+  document.getElementById("tm-name").value = t.taskName || "";
+  document.getElementById("tm-feature").value = t.feature || "";
+  fillSelect(document.getElementById("tm-activity-select"), allActivityOptions, activityKey(t.activity));
+  fillSelect(document.getElementById("tm-assignee-select"), allAssigneeOptions, t.assignee);
+  fillSelect(document.getElementById("tm-status-select"), allStatusOptions, (t.status || "").trim(), !!CONFIG.STATUS_OPTIONS);
+  document.getElementById("tm-details-warn").style.display = "none";
+
   // Jira link — clickable, opens in a new tab. Hidden if the row has no Jira.
   const jiraRow = document.getElementById("tm-jira-row");
   const jiraCell = document.getElementById("tm-jira");
@@ -2217,6 +2286,8 @@ function openTaskModal(t) {
   }
 
   const chainBtn = document.getElementById("tm-chain-start");
+  const detailInputs = ["tm-name", "tm-feature", "tm-activity-select", "tm-assignee-select", "tm-status-select"].map((id) => document.getElementById(id));
+  const saveDetailsBtn = document.getElementById("tm-save-details");
   if (readOnlyMode) {
     // View-only account — every control here would try (and fail) to write
     // to the sheet, so disable them and say why instead of letting Apply
@@ -2225,11 +2296,16 @@ function openTaskModal(t) {
     workloadInput.disabled = true;
     recalcBtn.disabled = true;
     chainBtn.disabled = true;
+    detailInputs.forEach((el) => { el.disabled = true; });
+    saveDetailsBtn.disabled = true;
     warn.style.display = "block";
     warn.textContent = "You have view-only access to this sheet — estimate, workload, and Start-formula changes can't be saved.";
   } else {
     estInput.disabled = false;
     chainBtn.disabled = false;
+    detailInputs.forEach((el) => { el.disabled = false; });
+    saveDetailsBtn.disabled = false;
+    saveDetailsBtn.textContent = "Save details";
   }
 
   document.getElementById("task-modal-backdrop").classList.add("open");
@@ -2243,6 +2319,80 @@ function closeTaskModal() {
 document.getElementById("tm-cancel").addEventListener("click", closeTaskModal);
 document.getElementById("task-modal-backdrop").addEventListener("click", (e) => {
   if (e.target.id === "task-modal-backdrop") closeTaskModal();
+});
+
+// Task name / Feature / Activity / Assignee / Status — the same fields the
+// "Add task" form fills in for a new row, editable here for the existing one.
+// Goes through the normal undo/redo snapshot so it can be reverted like any
+// other edit.
+document.getElementById("tm-save-details").addEventListener("click", async () => {
+  if (!modalTask) return;
+  const t = modalTask;
+  const warn = document.getElementById("tm-details-warn");
+  const saveBtn = document.getElementById("tm-save-details");
+
+  const name = document.getElementById("tm-name").value.trim();
+  const feature = document.getElementById("tm-feature").value.trim();
+  const activity = document.getElementById("tm-activity-select").value;
+  const assignee = document.getElementById("tm-assignee-select").value;
+  const status = document.getElementById("tm-status-select").value;
+
+  if (!name) { warn.style.display = "block"; warn.textContent = "Task name can't be blank."; return; }
+  if (!assignee) { warn.style.display = "block"; warn.textContent = "Choose an assignee."; return; }
+
+  const prevActivityKey = activityKey(t.activity);
+  const changed = name !== (t.taskName || "") || feature !== (t.feature || "") ||
+    activity !== prevActivityKey || assignee !== t.assignee || status !== (t.status || "").trim();
+  if (!changed) { warn.style.display = "block"; warn.textContent = "No changes to save."; return; }
+
+  warn.style.display = "none";
+  saveBtn.disabled = true;
+  saveBtn.textContent = "Saving…";
+
+  commitUndoPoint(snapshotState());
+  const prevAssignee = t.assignee;
+  t.taskName = name;
+  t.feature = feature;
+  t.activity = activity;
+  t.assignee = assignee;
+  t.status = status;
+  t.label = t.feature || t.taskName || t.activity || "Task";
+  t.color = colorForActivity(t.activity);
+
+  setStatus(`Saving row ${t.rowNum} (details)…`, false, true);
+  try {
+    const A = CONFIG.A1;
+    await writeCells([
+      { range: `'${CONFIG.SHEET_NAME}'!${A.TASKS}${t.rowNum}`, values: [[name]] },
+      { range: `'${CONFIG.SHEET_NAME}'!${A.FEATURE}${t.rowNum}`, values: [[feature]] },
+      { range: `'${CONFIG.SHEET_NAME}'!${A.ACTIVITY}${t.rowNum}`, values: [[activity]] },
+      { range: `'${CONFIG.SHEET_NAME}'!${A.ASSIGNEE}${t.rowNum}`, values: [[assignee]] },
+      { range: `'${CONFIG.SHEET_NAME}'!${A.STATUS}${t.rowNum}`, values: [[status]] },
+    ]);
+
+    // Assignee/Activity are closed dropdowns, so the chosen value always
+    // exists — but it might not be in the CURRENT filter selection, in which
+    // case the task would vanish the moment this modal closes. Keep it visible.
+    if (assignee !== prevAssignee && !selectedAssignees.has(assignee)) {
+      selectedAssignees.add(assignee); persistAssigneeSelection(); buildAssigneePanel();
+    }
+    if (activity !== prevActivityKey && !selectedActivities.has(activity)) {
+      selectedActivities.add(activity); persistActivitySelection(); buildActivityPanel();
+    }
+
+    buildLanes();
+    render();
+    setStatus(`Saved row ${t.rowNum} details · ${new Date().toLocaleTimeString()}`);
+    closeTaskModal();
+  } catch (err) {
+    console.error(err);
+    setStatus("Save failed — reload to resync: " + err.message, true);
+    warn.style.display = "block";
+    warn.textContent = "Save failed — reload to resync: " + err.message;
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = "Save details";
+  }
 });
 
 document.getElementById("tm-recalc").addEventListener("click", () => {
@@ -2536,8 +2686,9 @@ function openNewTaskModal(t, lane, where) {
   fillSelect(document.getElementById("nt-assignee"), allAssigneeOptions, t.assignee);
   fillSelect(document.getElementById("nt-status"), allStatusOptions, (t.status || "").trim(), !!CONFIG.STATUS_OPTIONS);
 
-  // Feature/Improvement/Support is inherited from the clicked task, not entered.
-  document.getElementById("nt-feature").textContent = t.feature || "(blank)";
+  // Feature/Improvement/Support is prepopulated from the clicked task, but
+  // editable — the new task doesn't have to belong to the same one.
+  document.getElementById("nt-feature").value = t.feature || "";
 
   const warn = document.getElementById("nt-warn");
   if (where === "above" && !prev) {
@@ -2574,6 +2725,7 @@ function readNewTaskForm() {
     activity: document.getElementById("nt-activity").value,
     assignee: document.getElementById("nt-assignee").value,
     status: document.getElementById("nt-status").value,
+    feature: document.getElementById("nt-feature").value.trim(),
   };
 }
 
@@ -2620,7 +2772,7 @@ function updateNewTaskPreview() {
   preview.innerHTML = lines.join("<br>");
 }
 
-["nt-name", "nt-est", "nt-workload", "nt-activity", "nt-assignee", "nt-status"].forEach((id) => {
+["nt-name", "nt-est", "nt-workload", "nt-activity", "nt-assignee", "nt-status", "nt-feature"].forEach((id) => {
   const el = document.getElementById(id);
   el.addEventListener("input", updateNewTaskPreview);
   el.addEventListener("change", updateNewTaskPreview);
@@ -2728,7 +2880,7 @@ async function performTaskInsert(clicked, where, form) {
 
   put(A.ASSIGNEE, newRow, plan.assignee);
   put(A.TASKS,    newRow, plan.name);
-  put(A.FEATURE,  newRow, clicked.feature || "");   // inherited from the clicked task
+  put(A.FEATURE,  newRow, plan.feature || "");   // prepopulated from the clicked task, editable
   put(A.ACTIVITY, newRow, plan.activity);
   put(A.EST,      newRow, plan.est);
   put(A.STATUS,   newRow, plan.status);
@@ -2751,7 +2903,7 @@ async function performTaskInsert(clicked, where, form) {
     kind: "insert",
     where,
     clickedRowNum: clicked.rowNum,
-    form: { name: plan.name, est: plan.est, workload: plan.workload, activity: plan.activity, assignee: plan.assignee, status: plan.status },
+    form: { name: plan.name, est: plan.est, workload: plan.workload, activity: plan.activity, assignee: plan.assignee, status: plan.status, feature: plan.feature },
     shiftedRestore,
     manualOrderBefore,
     insertRow,
