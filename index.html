@@ -110,7 +110,15 @@
   #task-modal .field{margin-top:12px;}
   #task-modal .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
   #task-modal .field input, #task-modal .field select{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;}
-  #task-modal .details-section{margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border);}
+  #task-modal .tm-tabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--border);}
+  #task-modal .tm-tab-btn{
+    padding:8px 4px;margin-bottom:-1px;background:none;border:0;border-bottom:2px solid transparent;
+    font-size:13px;color:var(--muted);cursor:pointer;
+  }
+  #task-modal .tm-tab-btn + .tm-tab-btn{margin-left:14px;}
+  #task-modal .tm-tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600;}
+  #task-modal .tm-tab-panel{display:none;}
+  #task-modal .tm-tab-panel.active{display:block;}
   #task-modal .preview{margin-top:14px;padding:10px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;font-size:12.5px;}
   #task-modal .preview b{color:#0369a1;}
   #task-modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
@@ -351,8 +359,13 @@
     <h2 id="tm-title">Task</h2>
     <div class="sub" id="tm-sub"></div>
 
-    <div class="details-section">
-      <div class="field">
+    <div class="tm-tabs">
+      <button class="tm-tab-btn active" type="button" data-tm-tab="details">Details</button>
+      <button class="tm-tab-btn" type="button" data-tm-tab="schedule">Schedule</button>
+    </div>
+
+    <div class="tm-tab-panel active" data-tm-panel="details">
+      <div class="field" style="margin-top:0;">
         <label for="tm-name">Task name</label>
         <input type="text" id="tm-name">
       </div>
@@ -378,32 +391,37 @@
       </div>
     </div>
 
-    <div class="row" id="tm-jira-row" style="display:none;"><span>Jira</span><span id="tm-jira">–</span></div>
-    <div class="row"><span>Start</span><span id="tm-start">–</span></div>
-    <div class="row"><span>End</span><span id="tm-end">–</span></div>
-    <div class="row" id="tm-start-formula-row"><span>Start formula</span><span id="tm-start-formula">–</span></div>
-    <div class="row" id="tm-formula-row"><span>End formula</span><span id="tm-formula">–</span></div>
-    <div class="field">
-      <label for="tm-est">Estimate (man-days)</label>
-      <input type="number" id="tm-est" step="0.1" min="0">
-    </div>
-    <div class="field">
-      <label for="tm-workload">Workload (%)</label>
-      <input type="number" id="tm-workload" step="1" min="1" max="100">
-    </div>
-    <div class="preview" id="tm-preview" style="display:none;"></div>
-    <div class="warn" id="tm-warn" style="display:none;"></div>
-    <div class="actions">
-      <button id="tm-cancel">Close</button>
-      <button id="tm-recalc">Recalculate</button>
-      <button id="tm-apply" style="display:none;">Apply</button>
-    </div>
-    <div class="field" id="tm-start-section" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">
-      <label>Start formula — chain to the task above (previous priority row)</label>
-      <div class="preview" id="tm-start-preview" style="display:none;"></div>
-      <div class="actions" style="margin-top:12px;">
-        <button id="tm-chain-start">Chain Start to previous task</button>
+    <div class="tm-tab-panel" data-tm-panel="schedule">
+      <div class="row" id="tm-jira-row" style="display:none;"><span>Jira</span><span id="tm-jira">–</span></div>
+      <div class="row"><span>Start</span><span id="tm-start">–</span></div>
+      <div class="row"><span>End</span><span id="tm-end">–</span></div>
+      <div class="row" id="tm-start-formula-row"><span>Start formula</span><span id="tm-start-formula">–</span></div>
+      <div class="row" id="tm-formula-row"><span>End formula</span><span id="tm-formula">–</span></div>
+      <div class="field" style="margin-top:12px;">
+        <label for="tm-est">Estimate (man-days)</label>
+        <input type="number" id="tm-est" step="0.1" min="0">
       </div>
+      <div class="field">
+        <label for="tm-workload">Workload (%)</label>
+        <input type="number" id="tm-workload" step="1" min="1" max="100">
+      </div>
+      <div class="preview" id="tm-preview" style="display:none;"></div>
+      <div class="warn" id="tm-warn" style="display:none;"></div>
+      <div class="actions">
+        <button id="tm-recalc">Recalculate</button>
+        <button id="tm-apply" style="display:none;">Apply</button>
+      </div>
+      <div class="field" id="tm-start-section" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">
+        <label>Start formula — chain to the task above (previous priority row)</label>
+        <div class="preview" id="tm-start-preview" style="display:none;"></div>
+        <div class="actions" style="margin-top:12px;">
+          <button id="tm-chain-start">Chain Start to previous task</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">
+      <button id="tm-cancel">Close</button>
     </div>
   </div>
 </div>
@@ -2228,15 +2246,37 @@ document.getElementById("btn-align-waterfall").addEventListener("click", () => {
    ============================================================ */
 let modalTask = null;
 
+// Two tabs share this one modal — Details (name/activity/assignee/status/
+// feature) and Schedule (dates, formulas, estimate/workload, chaining) — so
+// the dialog doesn't turn into one long scroll of unrelated fields.
+function setTaskModalTab(tabName) {
+  document.querySelectorAll("#task-modal .tm-tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tmTab === tabName);
+  });
+  document.querySelectorAll("#task-modal .tm-tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.tmPanel === tabName);
+  });
+}
+document.querySelectorAll("#task-modal .tm-tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => setTaskModalTab(btn.dataset.tmTab));
+});
+
 function openTaskModal(t) {
   modalTask = t;
   const parsed = parseWorkdayFormula(t.endFormulaRaw);
+  setTaskModalTab("details"); // always open on Details — that's where most edits happen
 
   document.getElementById("tm-title").textContent = t.label;
   document.getElementById("tm-sub").textContent = `${t.assignee}${t.activity ? " • " + t.activity : ""}`;
 
   // Details — same fields as the "Add task" form, prepopulated from this task.
-  document.getElementById("tm-name").value = t.taskName || "";
+  // The Tasks column itself is blank on plenty of rows — the bar's visible
+  // label falls back to Feature or Activity in that case (see loadData's
+  // `label` rule). Prepopulate from that same fallback chain so the field
+  // isn't blank just because the raw Tasks cell happens to be, which would
+  // otherwise force a name to be typed before ANY detail (even just Status)
+  // could be saved.
+  document.getElementById("tm-name").value = t.taskName || t.label || "";
   document.getElementById("tm-feature").value = t.feature || "";
   fillSelect(document.getElementById("tm-activity-select"), allActivityOptions, activityKey(t.activity));
   fillSelect(document.getElementById("tm-assignee-select"), allAssigneeOptions, t.assignee);
