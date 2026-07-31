@@ -1860,10 +1860,27 @@ function render() {
       bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
         <div class="handle left"></div><div class="handle right"></div>`;
 
+      // A 1-day task's bar is barely wider than its two resize handles
+      // combined (16px each on mobile), leaving little or no plain "move"
+      // area in the middle — a touch meant to reorder priority lands on a
+      // handle instead and gets read as a resize. Shrink both handles just
+      // enough to guarantee a small center strip that's always move-only;
+      // wider (2+ day) bars have plenty of room already and are untouched.
+      const isMobileBars = document.body.classList.contains("mobile-mode");
+      const baseHandleW = isMobileBars ? 16 : 8;
+      const MIN_MOVE_ZONE = isMobileBars ? 14 : 10;
+      const handleW = (width - baseHandleW * 2 < MIN_MOVE_ZONE)
+        ? Math.max(4, (width - MIN_MOVE_ZONE) / 2)
+        : baseHandleW;
+      if (handleW !== baseHandleW) {
+        bar.querySelector(".handle.left").style.width = handleW + "px";
+        bar.querySelector(".handle.right").style.width = handleW + "px";
+      }
+
       // When the label text spills past the bar's own right edge (see comment
       // above), the true end-date handle sits well BEFORE the visible tail of
       // the text — a user trying to resize "from the end" naturally grabs
-      // where the label visually stops, misses the real 8px handle, and the
+      // where the label visually stops, misses the real handle, and the
       // drag never starts. Extending the right handle's hit zone out to cover
       // the overflow makes wherever the label visually ends draggable too,
       // without moving the handle's true anchor (left edge stays put).
@@ -1871,7 +1888,7 @@ function render() {
       if (overflowPx > 0) {
         const rightHandle = bar.querySelector(".handle.right");
         const buffer = 4;
-        rightHandle.style.width = (8 + overflowPx + buffer) + "px";
+        rightHandle.style.width = (handleW + overflowPx + buffer) + "px";
         rightHandle.style.right = -(overflowPx + buffer) + "px";
       }
 
