@@ -605,6 +605,8 @@ let workdayIndexMap = new Map(); // dateKey -> index into workdayList, used to c
 let pxPerDay = 24; // overridden from saved uiState.zoom once the DOM is ready, see boot below
 const ROW_H = 34;
 const TIMELINE_PAD_YEARS = 1; // calendar runway rendered before the first and after the last visible task
+const CHAIN_SNAP_TOLERANCE_COLS = 1; // how near the previous task's tail a drop can land and still offer to chain
+const MAX_TIMELINE_SPAN_DAYS = 366 * 15; // hard cap on the rendered range, so a bad date cell can't freeze the browser
 const DAY_MS = 86400000;
 let holidaySet = new Set(); // "YYYY-M-D" keys, Vietnam holidays from the Holidays tab
 
@@ -1718,6 +1720,14 @@ function buildLanes() {
   // and no surrounding calendar for context.
   minDate.setFullYear(minDate.getFullYear() - TIMELINE_PAD_YEARS);
   maxDate.setFullYear(maxDate.getFullYear() + TIMELINE_PAD_YEARS);
+  // Safety net: one malformed date cell (a stray year 9999, a #REF! that
+  // parses oddly) would otherwise make the range span millennia, and
+  // buildWorkdayIndex walks the range one calendar day at a time — enough to
+  // lock the browser up solid. Cap the span rather than trusting the data.
+  if (maxDate - minDate > MAX_TIMELINE_SPAN_DAYS * DAY_MS) {
+    maxDate = new Date(minDate.getTime() + MAX_TIMELINE_SPAN_DAYS * DAY_MS);
+    console.warn("Timeline span capped — the sheet contains an out-of-range date.");
+  }
   buildWorkdayIndex();
 }
 
@@ -2215,8 +2225,14 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
 
     // A plain click (negligible movement) on the bar body opens the
     // estimate/workload recalculation dialog instead of being treated as a drag.
+    // The pixel threshold alone isn't enough: at Quarter zoom one workday column
+    // is only 4px, so a 3px drag genuinely moves the task a day while still
+    // measuring as "negligible" — that used to silently revert the move AND pop
+    // the task dialog. Anything that actually changed the task's position or row
+    // is a drag, however small the pointer travel was.
     const totalMove = Math.hypot(lastClientX - startX, lastClientY - startY);
-    if (mode === "move" && totalMove < 4) {
+    const movedColumns = dayOffset(t.start) !== origStartIdx || dayOffset(t.end) !== origEndIdx;
+    if (mode === "move" && totalMove < 4 && !movedColumns && deltaRows === 0) {
       mode = null;
       t.start = new Date(origStart); t.end = new Date(origEnd); // discard any sub-pixel jitter
       render();
@@ -2330,21 +2346,43 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
       const pos = lane.idxs.indexOf(idx);
       if (pos > 0) {
         const prevTask = tasks[lane.idxs[pos - 1]];
-        const alignsRightAfter = dayOffset(t.start) === dayOffset(prevTask.end) + 1;
+        // "Dropped at the tail of the task above" is a hand-aimed gesture, so it
+        // rarely lands on the exact adjacent column. Accept anything within a day
+        // either side — butted onto the last day, exactly adjacent, or one day
+        // short — and snap to true adjacency on accept. Requiring an exact hit
+        // meant the prompt simply never appeared for most real drops.
+        const idealStartCol = dayOffset(prevTask.end) + 1;
+        const gap = dayOffset(t.start) - idealStartCol; // 0 = already exactly adjacent
+        const nearTailOfPrev = Math.abs(gap) <= CHAIN_SNAP_TOLERANCE_COLS;
         const chainRe = new RegExp("WORKDAY\\(\\s*" + CONFIG.A1.END + "(\\d+)", "i");
         const m = t.startIsFormula ? (t.startFormulaRaw || "").match(chainRe) : null;
         const alreadyChainedToPrev = m && parseInt(m[1], 10) === prevTask.rowNum;
-        if (alignsRightAfter && !alreadyChainedToPrev) {
+        if (nearTailOfPrev && !alreadyChainedToPrev) {
           await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const prevName = prevTask.taskName || prevTask.label;
+          const snappedStart = excelWorkday(prevTask.end, 1);
+          const snapNote = gap === 0
+            ? ""
+            : `\n\nIts Start will snap to ${fmtDate(snappedStart)} — the first working day after "${prevName}" ends (${fmtDate(prevTask.end)}).`;
           const ok = window.confirm(
-            `This task's Start now lines up right after "${prevTask.label}" (the task above it).\n\nChain its Start formula to that task, so it automatically follows if that task's schedule shifts?`
+            `Make this task start right after "${prevName}" (the task above it)?${snapNote}\n\nChaining its Start formula to that task means it automatically follows whenever that task's schedule shifts.`
           );
           if (ok) {
+            // Captured before the snap so a plain-date End keeps the same
+            // working-day span instead of silently changing duration.
+            const spanCols = dayOffset(t.end) - dayOffset(t.start);
             await writeFormula(t, "start", buildStartChainFormula(prevTask.rowNum));
-            t.start = excelWorkday(prevTask.end, 1);
+            t.start = snappedStart;
             if (t.endIsFormula) {
               const parsedEnd = parseWorkdayFormula(t.endFormulaRaw);
               if (parsedEnd) t.end = excelWorkday(t.start, workdaySpanFor(t.estNum, parsedEnd.workload, parsedEnd.offset));
+            } else {
+              // End is a literal date: recompute it from the snapped Start and
+              // write it, since the save below is skipped for chained tasks.
+              const lastIdx = workdayList.length - 1;
+              const si = dayOffset(t.start);
+              t.end = new Date(workdayList[Math.max(0, Math.min(lastIdx, si + spanCols))]);
+              await saveField(t, "end");
             }
             chainedToPrev = true;
           }
