@@ -833,8 +833,13 @@ async function applySnapshot(snapshot) {
     t.color = colorForActivity(t.activity);
 
     const fields = new Set();
-    if (startChanged) fields.add("start");
-    if (endChanged) fields.add("end");
+    // Start and End are restored as a PAIR whenever either moved. They define
+    // the task's span together, and the app's in-memory copy can already
+    // disagree with the sheet — a drag writes only the dragged field and lets
+    // the other one's formula recompute. Rewriting just one would pin a
+    // restored Start against a stale End, which is what left tasks with the
+    // wrong length after an undo.
+    if (startChanged || endChanged) { fields.add("start"); fields.add("end"); }
     if (estChanged) fields.add("est");
     if (nameChanged) fields.add("name");
     if (featureChanged) fields.add("feature");
@@ -847,15 +852,35 @@ async function applySnapshot(snapshot) {
   saveManualOrder();
   buildLanes();
   render();
+
+  const data = [];
   for (const { t, fields } of writes) {
-    for (const field of fields) await restoreCell(t, field);
+    for (const field of fields) data.push(restoreCellWrite(t, field));
+  }
+  if (!data.length) return;
+
+  // One batched write instead of a PUT per cell: a half-applied restore was
+  // leaving some tasks moved and others not (the "some short, some very long"
+  // state). Whatever the outcome, reload afterwards so what's on screen is
+  // exactly what the sheet holds rather than what we hoped it would hold.
+  setStatus(`Restoring ${data.length} cell(s)…`, false, true);
+  try {
+    await writeCells(data);
+    await loadData();
+    setStatus(`Restored ${data.length} cell(s) · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    // Resync first, then report — loadData() sets its own status line on the
+    // way out, which would otherwise bury the reason the undo failed.
+    try { await loadData(); } catch (e2) { console.error(e2); }
+    setStatus("Undo could not be saved — the view has been reloaded to match the sheet. " + err.message, true);
   }
 }
 
-// Writes one cell back to the exact snapshot content: a formula field is
-// restored as its formula string (so it keeps cascading), a plain-date field
-// as the literal date, and Estimate as its numeric value.
-async function restoreCell(t, field) {
+// One cell's restore, as a batch entry: a formula field goes back as its
+// formula string (so it keeps cascading), a plain-date field as the literal
+// date, and Estimate as its numeric value.
+function restoreCellWrite(t, field) {
   let col, value;
   if (field === "start") { col = CONFIG.A1.START; value = t.startIsFormula && t.startFormulaRaw ? t.startFormulaRaw : fmtDate(t.start); }
   else if (field === "end") { col = CONFIG.A1.END; value = t.endIsFormula && t.endFormulaRaw ? t.endFormulaRaw : fmtDate(t.end); }
@@ -865,18 +890,7 @@ async function restoreCell(t, field) {
   else if (field === "activity") { col = CONFIG.A1.ACTIVITY; value = t.activity || ""; }
   else if (field === "assignee") { col = CONFIG.A1.ASSIGNEE; value = t.assignee || ""; }
   else { col = CONFIG.A1.STATUS; value = t.status || ""; }
-  const range = `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`;
-  setStatus(`Restoring row ${t.rowNum} (${field})…`, false, true);
-  try {
-    await sheetsFetch(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
-      method: "PUT",
-      body: JSON.stringify({ range, majorDimension: "ROWS", values: [[value]] }),
-    });
-    setStatus(`Restored row ${t.rowNum} ${field} · ${new Date().toLocaleTimeString()}`);
-  } catch (err) {
-    console.error(err);
-    setStatus("Restore failed — reload to resync: " + err.message, true);
-  }
+  return { range: `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`, values: [[value]] };
 }
 
 /* Two kinds of history entry now share these stacks:
@@ -2254,6 +2268,29 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     const changed = t.start.getTime() !== origStart.getTime() || t.end.getTime() !== origEnd.getTime();
     const endChanged = t.end.getTime() !== origEnd.getTime();
     mode = null;
+
+    // Confirm the move itself BEFORE anything is committed. This runs ahead of
+    // the undo point, every other dialog and every sheet write, so declining is
+    // a clean revert with nothing to undo — a mis-drag no longer has to be
+    // walked back through the history.
+    if (changed) {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const movedName = t.taskName || t.label;
+      const ok = window.confirm(
+        `Move "${movedName}"?\n\n` +
+        `From:  ${fmtDate(origStart)} – ${fmtDate(origEnd)}\n` +
+        `To:      ${fmtDate(t.start)} – ${fmtDate(t.end)}`
+      );
+      if (!ok) {
+        // Put everything back: dates, and the row order the drag was previewing.
+        t.start = new Date(origStart);
+        t.end = new Date(origEnd);
+        deltaRows = 0;
+        render();
+        setStatus(`Move cancelled · ${new Date().toLocaleTimeString()}`);
+        return;
+      }
+    }
 
     // Resizing (either handle) changes the working-day span, so recompute
     // Estimate from it — a plain move preserves the span, so it's skipped.
