@@ -604,6 +604,7 @@ let workdayList = [];       // Date[] — every working day (no weekends/holiday
 let workdayIndexMap = new Map(); // dateKey -> index into workdayList, used to compress weekends out of the grid
 let pxPerDay = 24; // overridden from saved uiState.zoom once the DOM is ready, see boot below
 const ROW_H = 34;
+const TIMELINE_PAD_YEARS = 1; // calendar runway rendered before the first and after the last visible task
 const DAY_MS = 86400000;
 let holidaySet = new Set(); // "YYYY-M-D" keys, Vietnam holidays from the Holidays tab
 
@@ -1423,7 +1424,7 @@ async function loadData() {
     buildLegend();
     buildLanes();
     render();
-    requestAnimationFrame(() => jumpToToday(true)); // land on Today by default, no click needed
+    requestAnimationFrame(() => landOnInitialView()); // land on Today, or the earliest task if today is off-range
     setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
@@ -1708,11 +1709,15 @@ function buildLanes() {
 
   if (!tasks.length) return;
   const visibleTasks = lanes.flatMap(l => l.idxs).map(i => tasks[i]);
-  if (!visibleTasks.length) { minDate = new Date(); maxDate = new Date(); maxDate.setDate(maxDate.getDate() + 30); buildWorkdayIndex(); return; }
+  if (!visibleTasks.length) { minDate = new Date(); maxDate = new Date(); maxDate.setFullYear(maxDate.getFullYear() + 1); buildWorkdayIndex(); return; }
   minDate = new Date(Math.min(...visibleTasks.map(t => t.start.getTime())));
   maxDate = new Date(Math.max(...visibleTasks.map(t => t.end.getTime())));
-  minDate.setDate(minDate.getDate() - 7);
-  maxDate.setDate(maxDate.getDate() + 14);
+  // A full year of runway on each side of the visible tasks. Without this the
+  // grid collapses to just the span of whatever is filtered in — narrowing to
+  // a single feature would leave a couple of bars with nowhere to drag them,
+  // and no surrounding calendar for context.
+  minDate.setFullYear(minDate.getFullYear() - TIMELINE_PAD_YEARS);
+  maxDate.setFullYear(maxDate.getFullYear() + TIMELINE_PAD_YEARS);
   buildWorkdayIndex();
 }
 
@@ -1746,7 +1751,34 @@ function dayOffset(d) {
     after.setDate(after.getDate() + 1);
     if (workdayIndexMap.has(dateKey(after))) return workdayIndexMap.get(dateKey(after));
   }
+  // Well outside the rendered range — clamp to the nearer end rather than
+  // always column 0, which would place a far-future date at the far left.
+  if (workdayList.length) {
+    if (d < workdayList[0]) return 0;
+    if (d > workdayList[workdayList.length - 1]) return workdayList.length - 1;
+  }
   return 0;
+}
+
+// True when today actually falls inside the rendered calendar — with a year of
+// padding on each side this is almost always the case, but a filter that
+// isolates work years away from now can still push today outside it.
+function todayInRange() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return !!minDate && !!maxDate && today >= minDate && today <= maxDate;
+}
+
+// Where to land after a (re)load. Today is the useful default, but if today
+// sits outside the rendered range, centring it would park the view on empty
+// runway with every bar off-screen — so fall back to the earliest task.
+function landOnInitialView() {
+  if (todayInRange()) { jumpToToday(true); return; }
+  const visible = lanes.flatMap(l => l.idxs).map(i => tasks[i]);
+  if (!visible.length) return;
+  const earliest = visible.reduce((a, b) => (a.start <= b.start ? a : b));
+  const wrap = document.getElementById("timeline-wrap");
+  const x = LABEL_W + dayOffset(earliest.start) * pxPerDay;
+  wrap.scrollTo({ left: Math.max(0, x - wrap.clientWidth / 3), top: wrap.scrollTop, behavior: "auto" });
 }
 
 /* ============================================================
