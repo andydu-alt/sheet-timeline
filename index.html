@@ -577,6 +577,14 @@ const CONFIG = {
   TOKEN_STORAGE_KEY: "sheet_timeline_token_v1",
 };
 function applySourceToConfig() {
+  // Clear the previous source's keys first. Object.assign only overwrites what
+  // the new source defines, so a key the new one omits (STATUS_OPTIONS,
+  // COL_OVERRIDE) would otherwise survive the switch — along with the COL/A1
+  // maps resolved for the OLD sheet's layout. Switching product line reloads
+  // the page today, so this is belt-and-braces, but it makes the function
+  // correct on its own terms.
+  ["LABEL","SPREADSHEET_ID","SHEET_NAME","SHEET_ID","HOLIDAYS_RANGE","HOLIDAYS_ARG",
+   "HEADERS","COL_OVERRIDE","STATUS_OPTIONS","COL","A1","LAST_COL"].forEach((k) => { delete CONFIG[k]; });
   Object.assign(CONFIG, SOURCES[sourceId]);
 }
 applySourceToConfig();
@@ -2322,16 +2330,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
           `${Math.abs(shiftCols)} workday(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount to keep the dependency intact?`
         );
         if (ok) {
-          const lastIdx = workdayList.length - 1;
-          chain.forEach((dep) => {
-            const depOrigStart = new Date(dep.start), depOrigEnd = new Date(dep.end);
-            const depStartIdx = dayOffset(dep.start);
-            const depWorkDays = dayOffset(dep.end) - depStartIdx + 1;
-            const newDepStartIdx = Math.max(0, Math.min(lastIdx, depStartIdx + shiftCols));
-            dep.start = new Date(workdayList[newDepStartIdx]);
-            dep.end = new Date(workdayList[Math.max(0, Math.min(lastIdx, newDepStartIdx + depWorkDays - 1))]);
-            chainShifted.push({ t: dep, origStart: depOrigStart, origEnd: depOrigEnd });
-          });
+          chainShifted = applyChainShift(chain, t.end);
         }
       }
     }
@@ -2344,20 +2343,31 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     let chainedToPrev = false;
     if ((wasMove || wasLeft) && lane) {
       const pos = lane.idxs.indexOf(idx);
-      if (pos > 0) {
-        const prevTask = tasks[lane.idxs[pos - 1]];
-        // "Dropped at the tail of the task above" is a hand-aimed gesture, so it
-        // rarely lands on the exact adjacent column. Accept anything within a day
-        // either side — butted onto the last day, exactly adjacent, or one day
-        // short — and snap to true adjacency on accept. Requiring an exact hit
-        // meant the prompt simply never appeared for most real drops.
-        const idealStartCol = dayOffset(prevTask.end) + 1;
-        const gap = dayOffset(t.start) - idealStartCol; // 0 = already exactly adjacent
-        const nearTailOfPrev = Math.abs(gap) <= CHAIN_SNAP_TOLERANCE_COLS;
+      // Which task did the drop actually land behind? The row directly above is
+      // the usual answer, but a horizontal drag does NOT re-sort the lane, so
+      // after dragging a task across the lane the bar it visually landed after
+      // is often not its priority predecessor — and the prompt then never
+      // appeared. Prefer the row above when it fits, otherwise take whichever
+      // same-lane task the drop genuinely lands at the tail of.
+      //
+      // The gesture is hand-aimed, so accept anything within a day either side —
+      // butted onto the last day, exactly adjacent, or one day short — and snap
+      // to true adjacency on accept.
+      const startCol = dayOffset(t.start);
+      const fitsTail = (cand) => Math.abs(startCol - (dayOffset(cand.end) + 1)) <= CHAIN_SNAP_TOLERANCE_COLS;
+      const above = pos > 0 ? tasks[lane.idxs[pos - 1]] : null;
+      let prevTask = above && fitsTail(above) ? above : null;
+      if (!prevTask) {
+        const others = lane.idxs.map((ix) => tasks[ix]).filter((x) => x !== t && fitsTail(x));
+        // Nearest tail wins if several qualify.
+        if (others.length) prevTask = others.reduce((a, b) => (a.end >= b.end ? a : b));
+      }
+      if (prevTask) {
+        const gap = startCol - (dayOffset(prevTask.end) + 1); // 0 = already exactly adjacent
         const chainRe = new RegExp("WORKDAY\\(\\s*" + CONFIG.A1.END + "(\\d+)", "i");
         const m = t.startIsFormula ? (t.startFormulaRaw || "").match(chainRe) : null;
         const alreadyChainedToPrev = m && parseInt(m[1], 10) === prevTask.rowNum;
-        if (nearTailOfPrev && !alreadyChainedToPrev) {
+        if (!alreadyChainedToPrev) {
           await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
           const prevName = prevTask.taskName || prevTask.label;
           const snappedStart = excelWorkday(prevTask.end, 1);
@@ -2365,7 +2375,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
             ? ""
             : `\n\nIts Start will snap to ${fmtDate(snappedStart)} — the first working day after "${prevName}" ends (${fmtDate(prevTask.end)}).`;
           const ok = window.confirm(
-            `Make this task start right after "${prevName}" (the task above it)?${snapNote}\n\nChaining its Start formula to that task means it automatically follows whenever that task's schedule shifts.`
+            `Make this task start right after "${prevName}"?${snapNote}\n\nChaining its Start formula to that task means it automatically follows whenever that task's schedule shifts.`
           );
           if (ok) {
             // Captured before the snap so a plain-date End keeps the same
@@ -2373,6 +2383,21 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
             const spanCols = dayOffset(t.end) - dayOffset(t.start);
             await writeFormula(t, "start", buildStartChainFormula(prevTask.rowNum));
             t.start = snappedStart;
+
+            // Keep the lane's priority order in step with the dependency we
+            // just created. Without this the row order and the formula
+            // disagree, and the next drag-reorder would prompt to "fix" a
+            // chain that is actually correct.
+            const prevIdx = tasks.indexOf(prevTask);
+            const curPos = lane.idxs.indexOf(idx);
+            const prevPos = lane.idxs.indexOf(prevIdx);
+            if (prevPos !== -1 && curPos !== -1 && curPos !== prevPos + 1) {
+              lane.idxs.splice(curPos, 1);
+              lane.idxs.splice(lane.idxs.indexOf(prevIdx) + 1, 0, idx);
+              lane.idxs.forEach((ix, r) => { tasks[ix].subRow = r; });
+              manualOrder[lane.name] = lane.idxs.map((ix) => tasks[ix].rowNum);
+              saveManualOrder();
+            }
             if (t.endIsFormula) {
               const parsedEnd = parseWorkdayFormula(t.endFormulaRaw);
               if (parsedEnd) t.end = excelWorkday(t.start, workdaySpanFor(t.estNum, parsedEnd.workload, parsedEnd.offset));
@@ -2430,9 +2455,39 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
 
 // Same-lane finish-to-start chain: dep.start === anchorTask's end + 1 day,
 // followed transitively (dep2 chained to dep1's original end, etc).
+/* How a task's Start formula refers to `rowNum`, or null if it doesn't.
+   Two conventions appear in these sheets:
+     "workday" — =WORKDAY(<EndCol><row>,1,Holidays…)  → starts the NEXT workday
+     "sameday" — =G320                                 → starts ON that End date
+   The distinction matters: it decides where the dependent lands when the row
+   it tracks moves. */
+function startFormulaRefKind(t, rowNum) {
+  if (!t.startIsFormula) return null;
+  const f = (t.startFormulaRaw || "").replace(/\s+/g, "");
+  const end = CONFIG.A1.END;
+  // \b after the digits so G32 doesn't match a reference to G320.
+  if (new RegExp("^=\\(?WORKDAY\\(" + end + rowNum + "\\b", "i").test(f)) return "workday";
+  if (new RegExp("^=" + end + rowNum + "$", "i").test(f)) return "sameday";
+  return null;
+}
+
+/* Walks the finish-to-start chain that follows `anchorTask`.
+
+   A task counts as a dependent when EITHER:
+     - its Start formula genuinely references the predecessor's row, or
+     - its Start is a literal date sitting exactly one workday after it.
+
+   Date adjacency alone is NOT enough for a formula-driven Start. The sheet
+   recomputes that cell from whichever row the formula names, so if the formula
+   points elsewhere the adjacency is a coincidence. Shifting such a task used to
+   corrupt it: we'd write its End forward (literal, so it gets written) while
+   leaving its Start alone (formula-driven, so it doesn't) — Start stays, End
+   moves out, and the bar grows by the shift amount, compounding on every drag.
+   Invisible until a reload, because in memory both ends had moved together. */
 function findDependencyChain(anchorTask, lane, anchorOrigEnd) {
   const chain = [];
   const used = new Set([anchorTask]);
+  let cursorTask = anchorTask;
   let cursorEnd = anchorOrigEnd;
   const candidates = lane.idxs.map((ix) => tasks[ix]).filter((x) => x !== anchorTask);
   let found = true;
@@ -2440,16 +2495,55 @@ function findDependencyChain(anchorTask, lane, anchorOrigEnd) {
     found = false;
     for (const cand of candidates) {
       if (used.has(cand)) continue;
-      if (dayOffset(cand.start) === dayOffset(cursorEnd) + 1) {
-        chain.push(cand);
-        used.add(cand);
-        cursorEnd = cand.end;
-        found = true;
-        break;
+      let sameDay;
+      if (cand.startIsFormula) {
+        const kind = startFormulaRefKind(cand, cursorTask.rowNum);
+        if (!kind) continue;
+        sameDay = kind === "sameday";
+      } else {
+        if (dayOffset(cand.start) !== dayOffset(cursorEnd) + 1) continue;
+        sameDay = false;
       }
+      chain.push({ t: cand, sameDay });
+      used.add(cand);
+      cursorTask = cand;
+      cursorEnd = cand.end;
+      found = true;
+      break;
     }
   }
   return chain;
+}
+
+/* Re-dates a chain after its anchor's End moved to `anchorNewEnd`.
+
+   Each dependent is placed relative to its own predecessor's NEW end — matching
+   whatever its Start formula actually means — and keeps its original
+   working-day span. Preserving the span is the whole point: a task whose Start
+   is a formula and whose End is a literal date would otherwise have its Start
+   recomputed by the sheet while its End stayed frozen, quietly stretching (or
+   collapsing) the task. Returns [{ t, origStart, origEnd }] for saving. */
+function applyChainShift(chain, anchorNewEnd) {
+  const moved = [];
+  const lastIdx = workdayList.length - 1;
+  let cursorEnd = anchorNewEnd;
+  for (const { t: dep, sameDay } of chain) {
+    const origStart = new Date(dep.start), origEnd = new Date(dep.end);
+    const spanCols = dayOffset(dep.end) - dayOffset(dep.start);
+    dep.start = sameDay ? new Date(cursorEnd) : excelWorkday(cursorEnd, 1);
+
+    const parsedEnd = dep.endIsFormula ? parseWorkdayFormula(dep.endFormulaRaw) : null;
+    if (parsedEnd) {
+      // End is a WORKDAY(Start, Estimate…) formula — it recomputes itself.
+      dep.end = excelWorkday(dep.start, workdaySpanFor(dep.estNum, parsedEnd.workload, parsedEnd.offset));
+    } else {
+      const si = dayOffset(dep.start);
+      dep.end = new Date(workdayList[Math.max(0, Math.min(lastIdx, si + spanCols))]);
+    }
+    moved.push({ t: dep, origStart, origEnd });
+    cursorEnd = dep.end;
+  }
+  return moved;
 }
 
 // Scans a lane (in its CURRENT priority order) for tasks whose Start
@@ -2955,18 +3049,11 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
             `${Math.abs(shiftCols)} workday(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount (waterfall) to keep the dependency intact?`
           );
           if (ok) {
-            const lastIdx = workdayList.length - 1;
-            for (const dep of chain) {
-              const depOrigStart = new Date(dep.start), depOrigEnd = new Date(dep.end);
-              const depStartIdx = dayOffset(dep.start);
-              const depWorkDays = dayOffset(dep.end) - depStartIdx + 1;
-              const newDepStartIdx = Math.max(0, Math.min(lastIdx, depStartIdx + shiftCols));
-              dep.start = new Date(workdayList[newDepStartIdx]);
-              dep.end = new Date(workdayList[Math.max(0, Math.min(lastIdx, newDepStartIdx + depWorkDays - 1))]);
-              // Only write cells that aren't formula-driven — a formula Start
-              // (=WORKDAY(H<prev>,1,…)) or formula End cascades on its own in
-              // the sheet once this task's End lands.
-              await saveChangedFields(dep, depOrigStart, depOrigEnd);
+            // Only write cells that aren't formula-driven — a formula Start
+            // (=WORKDAY(H<prev>,1,…)) or formula End cascades on its own in
+            // the sheet once this task's End lands.
+            for (const { t: dep, origStart: dS, origEnd: dE } of applyChainShift(chain, t.end)) {
+              await saveChangedFields(dep, dS, dE);
             }
           }
         }
