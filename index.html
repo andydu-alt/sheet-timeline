@@ -31,6 +31,12 @@
 
   #readonly-banner{display:none;align-items:center;gap:8px;font-size:12.5px;padding:8px 14px;background:#fffbeb;color:#92400e;border-bottom:1px solid #fde68a;flex-shrink:0;}
   #readonly-banner.shown{display:flex;}
+  /* A failed write used to show only in the status line, which is easy to miss —
+     you'd think a drag had saved when it hadn't. This stays up until dismissed. */
+  #save-error-banner{display:none;align-items:center;gap:10px;font-size:12.5px;padding:8px 14px;background:#fef2f2;color:#991b1b;border-bottom:1px solid #fecaca;flex-shrink:0;}
+  #save-error-banner.shown{display:flex;}
+  #save-error-banner span{flex:1;}
+  #save-error-banner button{font-size:12px;padding:3px 10px;}
 
   /* View-only accounts: bars are inert — no grab cursor, no click/drag. */
   body.readonly-mode .bar,
@@ -325,6 +331,11 @@
 
 <div id="legend"></div>
 <div id="readonly-banner">👁 View-only access — you can browse the timeline, but changes can't be saved to this sheet.</div>
+<div id="save-error-banner">
+  <span id="save-error-text"></span>
+  <button id="save-error-reload">Reload from Sheet</button>
+  <button id="save-error-dismiss">Dismiss</button>
+</div>
 
 <div id="signin-screen">
   <p>Sign in with your Google account to load the <b id="signin-source">–</b> sheet as a drag-and-drop timeline. Dragging a bar updates the Start/End date cells directly in the sheet.</p>
@@ -1253,6 +1264,23 @@ function setReadOnlyMode(on) {
   document.getElementById("btn-apply-frd-spec").style.display = on ? "none" : "inline-block";
   document.getElementById("btn-align-waterfall").style.display = on ? "none" : "inline-block";
 }
+
+/* A failed write must be impossible to miss. setStatus alone put it in a small
+   status line that scrolls past — you would carry on dragging, believing the
+   sheet had been updated when it had not. This banner stays up until it is
+   dismissed or the next write succeeds. */
+function reportSaveFailure(what, err) {
+  console.error(err);
+  const msg = "\u26a0 " + what + " was NOT saved to the sheet: " + (err && err.message ? err.message : err);
+  document.getElementById("save-error-text").textContent = msg;
+  document.getElementById("save-error-banner").classList.add("shown");
+  setStatus(msg, true);
+}
+function clearSaveFailure() {
+  document.getElementById("save-error-banner").classList.remove("shown");
+}
+document.getElementById("save-error-dismiss").addEventListener("click", clearSaveFailure);
+document.getElementById("save-error-reload").addEventListener("click", () => { clearSaveFailure(); loadData(); });
 
 function parseDate(str) {
   if (!str) return null;
@@ -2622,10 +2650,10 @@ async function saveField(t, field) {
       body: JSON.stringify({ range, majorDimension: "ROWS", values: [[value]] }),
     });
     if (field === "start") t.startIsFormula = false; else t.endIsFormula = false;
+    clearSaveFailure();
     setStatus(`Saved row ${t.rowNum} ${field}: ${value} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
-    console.error(err);
-    setStatus("Save failed — reload to resync: " + err.message, true);
+    reportSaveFailure(`Row ${t.rowNum} ${field}`, err);
   }
 }
 
@@ -2640,10 +2668,10 @@ async function saveEstimate(t) {
       method: "PUT",
       body: JSON.stringify({ range, majorDimension: "ROWS", values: [[String(t.estNum)]] }),
     });
+    clearSaveFailure();
     setStatus(`Saved row ${t.rowNum} estimate: ${t.estNum} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
-    console.error(err);
-    setStatus("Save failed — reload to resync: " + err.message, true);
+    reportSaveFailure(`Row ${t.rowNum} estimate`, err);
   }
 }
 
