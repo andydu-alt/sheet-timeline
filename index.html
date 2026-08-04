@@ -1515,7 +1515,14 @@ async function loadData() {
     setStatus("Load failed: " + err.message, true);
   }
 }
-const AGGREGATE_FORMULA_RE = /^=\s*(min|max|sum|average|arrayformula)\s*\(/i;
+// A real "Feature" rollup row spans an entire block with a colon RANGE, e.g.
+// =min(G7:G78) / =max(H47:H61). A legitimate task can also use MIN/MAX to span
+// its own Dev+QA sibling rows, e.g. =MIN(G27,G28) / =Max(H27,H28) (IT DR's
+// "…(w D&Q)" tasks) — comma-separated explicit cells, no range. Requiring the
+// colon is what tells the two apart; matching on the function name alone (the
+// original version of this regex) silently dropped every "(w D&Q)" task in IT
+// DR because it looked like a rollup row from the formula's shape alone.
+const AGGREGATE_FORMULA_RE = /^=\s*(?:(?:min|max|sum|average)\s*\([^)]*:[^)]*\)|arrayformula\s*\()/i;
 let allActivityOptions = [];
 let allAssigneeOptions = [];
 let allStatusOptions = [];
