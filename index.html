@@ -476,20 +476,23 @@ const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleuse
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
    HEADER TEXT of every column the app needs — never a hardcoded column
-   letter or index. The two sheets do NOT share a layout (the Database sheet
-   has no Department column, so Start/End/Est land one column to the left of
-   where Core has them), which is exactly the kind of drift that silently
-   breaks a hand-maintained letter map: a hardcoded "H" is only ever right
-   for the one sheet it was written against. Resolving by header name at
-   load time (see resolveColumns() below) means a column can move, and even
-   a brand-new source only needs its header text listed here — no counting
-   columns by hand, and no repeat of the Est/End-column mixup this replaced.
+   letter or index. These sheets do NOT share a layout (the Database sheet has
+   no Department column, so Start/End/Est land one column to the left of where
+   Core has them; IT DR puts Status before Forecast?), which is exactly the
+   kind of drift that silently breaks a hand-maintained letter map: a
+   hardcoded "H" is only ever right for the one sheet it was written against.
+   Resolving by header name at load time (see resolveColumns() below) means a
+   column can move, and a brand-new source only needs its header text listed
+   here — no counting columns by hand, and no repeat of the Est/End-column
+   mixup this replaced.
 
    HEADERS values are matched case-insensitively/trimmed against row 1 of the
-   sheet. COL_OVERRIDE gives the 0-based column index directly for the rare
-   column that has no usable header text at all (see Database's Status
-   below) — everything else must resolve by name or the sheet fails to load
-   with a clear error instead of silently reading/writing the wrong column. */
+   sheet. A value may be an ARRAY of acceptable spellings, tried in order —
+   handy for singular/plural drift like "Task" vs "Tasks". COL_OVERRIDE gives
+   the 0-based column index directly for the rare column that has no usable
+   header text at all (see Database's Status below) — everything else must
+   resolve by name or the sheet fails to load with a clear error instead of
+   silently reading/writing the wrong column. */
 const SOURCES = {
   "core-general": {
     LABEL: "Core (General)",
@@ -524,6 +527,23 @@ const SOURCES = {
     // stray values ("On train", …) that are already sitting in this column.
     STATUS_OPTIONS: ["Done", "In Progress", "Not Start"],
   },
+  "it-dr": {
+    LABEL: "IT DR",
+    // Same workbook as Core (General) — a different tab, so it shares that
+    // file's Holidays sheet.
+    SPREADSHEET_ID: "1mM_6BOF2_XsmXJudqXMic95eAmxAShVBfbILxm7F86I",
+    SHEET_NAME: "IT DR Raw Data",
+    SHEET_ID: 1751363300,
+    HOLIDAYS_RANGE: "Holidays!B1:B300",
+    HOLIDAYS_ARG: "Holidays!$B$2:$B",
+    HEADERS: {
+      ASSIGNEE: "Assignee", DEPT: "Department", JIRA: "JIRA ID", FEATURE: "Feature/Improvement/Support",
+      // This tab heads the column "Task"; the others use "Tasks". Accept either
+      // so a later rename in one place doesn't break the load.
+      TASKS: ["Task", "Tasks"], ACTIVITY: "Activity", START: "Start date", END: "End date",
+      EST: "Est", STATUS: "Status",
+    },
+  },
 };
 
 // Standard spreadsheet column-letter conversion (0 -> A, 25 -> Z, 26 -> AA, …).
@@ -557,11 +577,18 @@ async function resolveColumns() {
   // in HEADERS and would otherwise be dropped entirely).
   const fields = new Set([...Object.keys(CONFIG.HEADERS), ...Object.keys(overrides)]);
   fields.forEach((field) => {
-    const headerText = CONFIG.HEADERS[field];
-    let index = headerText === undefined ? undefined : byHeader.get(headerText.trim().toLowerCase());
+    // A HEADERS value may be one name or a list of acceptable spellings.
+    const candidates = CONFIG.HEADERS[field] === undefined
+      ? []
+      : [].concat(CONFIG.HEADERS[field]);
+    let index;
+    for (const name of candidates) {
+      index = byHeader.get(String(name).trim().toLowerCase());
+      if (index !== undefined) break;
+    }
     if (index === undefined && field in overrides) index = overrides[field];
     if (index === undefined) {
-      throw new Error(`Column "${headerText || field}" not found in row 1 of "${CONFIG.SHEET_NAME}" — the sheet's headers may have changed.`);
+      throw new Error(`Column "${candidates.join('" / "') || field}" not found in row 1 of "${CONFIG.SHEET_NAME}" — the sheet's headers may have changed.`);
     }
     col[field] = index;
     a1[field] = colIndexToLetter(index);
@@ -1391,10 +1418,15 @@ async function loadData() {
     activityColors = new Map();
     let skippedSentinel = 0;
     let skippedAggregate = 0;
+    let skippedNoAssignee = 0; // has dates, but no Assignee — invisible unless reported
     rows.forEach((row, i) => {
       const assignee = (row[C.ASSIGNEE] || "").trim();
       const start = parseDate(row[C.START]);
       const end = parseDate(row[C.END]);
+      // A row with dates but no Assignee is a real task that the timeline
+      // cannot place (lanes ARE assignees), so it silently disappears. Count it
+      // and surface the number, rather than letting work quietly go missing.
+      if (!assignee && start && end) { skippedNoAssignee++; return; }
       if (!assignee || !start || !end) return; // skip blank/header/incomplete rows
       if (start.getFullYear() < MIN_SANE_YEAR || end.getFullYear() < MIN_SANE_YEAR) { skippedSentinel++; return; }
       const activity = (row[C.ACTIVITY] || "").trim();
@@ -1477,7 +1509,7 @@ async function loadData() {
     buildLanes();
     render();
     requestAnimationFrame(() => landOnInitialView()); // land on Today, or the earliest task if today is off-range
-    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""} · ${new Date().toLocaleTimeString()}`);
+    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""}${skippedNoAssignee ? ` · ⚠ ${skippedNoAssignee} hidden (no Assignee)` : ""} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
     setStatus("Load failed: " + err.message, true);
