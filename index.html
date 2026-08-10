@@ -660,7 +660,14 @@ let workdayIndexMap = new Map(); // dateKey -> index into workdayList, used to c
 let pxPerDay = 24; // overridden from saved uiState.zoom once the DOM is ready, see boot below
 const ROW_H = 34;
 const TIMELINE_PAD_YEARS = 1; // calendar runway rendered before the first and after the last visible task
-const CHAIN_SNAP_TOLERANCE_COLS = 1; // how near the previous task's tail a drop can land and still offer to chain
+// How near the previous task's tail a drop can land and still offer to chain.
+// At Week zoom (24px/workday column) a tolerance of 1 is only a 3-column-wide
+// target (the tail day, the ideal next day, or one day past) with no visual
+// cue while dragging to show you're near it — easy to miss by hand and get
+// silently no offer at all. Widened to 3 so a "roughly right after" drop
+// still gets asked, at the cost of also asking on some drops that only
+// coincidentally land this close without being intended as adjacent.
+const CHAIN_SNAP_TOLERANCE_COLS = 3;
 const MAX_TIMELINE_SPAN_DAYS = 366 * 15; // hard cap on the rendered range, so a bad date cell can't freeze the browser
 const DAY_MS = 86400000;
 let holidaySet = new Set(); // "YYYY-M-D" keys, Vietnam holidays from the Holidays tab
