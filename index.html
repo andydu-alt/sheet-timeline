@@ -669,6 +669,9 @@ const TIMELINE_PAD_YEARS = 1; // calendar runway rendered before the first and a
 // coincidentally land this close without being intended as adjacent.
 const CHAIN_SNAP_TOLERANCE_COLS = 3;
 const MAX_TIMELINE_SPAN_DAYS = 366 * 15; // hard cap on the rendered range, so a bad date cell can't freeze the browser
+// At or below this px-per-workday-column the top header groups by QUARTER
+// instead of by month (the "Zoom: Quarter" option is 4px/column).
+const QUARTER_HEADER_MAX_PX = 4;
 const DAY_MS = 86400000;
 let holidaySet = new Set(); // "YYYY-M-D" keys, Vietnam holidays from the Holidays tab
 
@@ -1924,17 +1927,24 @@ function render() {
 
   grid.style.width = fullWidth + "px";
 
-  // Month header
+  // Period header — months normally, but QUARTERS at the Quarter zoom level.
+  // At 4px per workday column a month is only ~84px wide, so month labels there
+  // are cramped and read as noise; one cell per quarter is what that zoom is
+  // actually for.
+  const useQuarters = pxPerDay <= QUARTER_HEADER_MAX_PX;
   const monthHeader = document.createElement("div");
   monthHeader.id = "month-header";
   monthHeader.style.width = fullWidth + "px";
   const monthCorner = document.createElement("div");
   monthCorner.className = "corner";
   monthHeader.appendChild(monthCorner);
-  let cursor = new Date(minDate);
-  cursor.setDate(1);
+  // Start on the first day of the containing period so the first cell's width
+  // is clamped by segStart below rather than starting mid-period.
+  let cursor = useQuarters
+    ? new Date(minDate.getFullYear(), Math.floor(minDate.getMonth() / 3) * 3, 1)
+    : new Date(minDate.getFullYear(), minDate.getMonth(), 1);
   while (cursor <= maxDate) {
-    const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    const next = new Date(cursor.getFullYear(), cursor.getMonth() + (useQuarters ? 3 : 1), 1);
     const segStart = cursor < minDate ? minDate : cursor;
     const segEnd = next < maxDate ? next : new Date(maxDate.getTime() + DAY_MS);
     const left = LABEL_W + dayOffset(segStart) * pxPerDay;
@@ -1943,7 +1953,9 @@ function render() {
     cell.className = "month-cell";
     cell.style.left = left + "px";
     cell.style.width = width + "px";
-    cell.textContent = cursor.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+    cell.textContent = useQuarters
+      ? `Q${Math.floor(cursor.getMonth() / 3) + 1} ${cursor.getFullYear()}`
+      : cursor.toLocaleDateString(undefined, { month: "short", year: "numeric" });
     monthHeader.appendChild(cell);
     cursor = next;
   }
