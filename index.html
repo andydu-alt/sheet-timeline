@@ -102,6 +102,11 @@
   .bar{position:absolute;z-index:1;height:26px;border-radius:5px;font-size:11.5px;color:var(--text);display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:visible;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.15),inset 0 0 0 1px rgba(0,0,0,.12);user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none;}
   .bar-text{overflow:visible;font-weight:400;color:#000;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;}
   .bar:active{cursor:grabbing;}
+  /* Dates are derived from sibling rows — signal it before the drag is
+     attempted, and hide the resize handles that would suggest otherwise. */
+  .bar.derived{cursor:not-allowed;}
+  .bar.derived:active{cursor:not-allowed;}
+  .bar.derived .handle{display:none;}
   /* Siblings glide to their new row as the dragged bar passes them. The
      dragged bar itself must track the finger 1:1, so it opts out. */
   .bar{transition:top .13s ease-out;}
@@ -1405,6 +1410,26 @@ function featureKey(feature) {
   return (feature || "(No feature)").trim() || "(No feature)";
 }
 
+/* "(w D&Q)" rows — FRD Update (w D&Q), Spec Update (w D&Q) — don't own their
+   dates. Their Start/End are =MIN(<dev>,<qa>) / =MAX(<dev>,<qa>) spanning the
+   Dev and QA sibling rows, so the only way to move one is to move whichever
+   sibling actually drives it. Dragging would replace those formulas with
+   literal dates and permanently break the link, so the timeline refuses.
+   Matches "D&Q" in either the Activity or the Task name, since the sheets
+   spell it both "(w D&Q)" and "(D&Q)" and capitalise it inconsistently. */
+const DERIVED_TASK_RE = /\(\s*w?\s*D\s*&\s*Q\s*\)/i;
+function isDerivedTask(t) {
+  return DERIVED_TASK_RE.test(t.activity || "") || DERIVED_TASK_RE.test(t.taskName || "");
+}
+function derivedTaskMessage(t) {
+  const name = t.taskName || t.label;
+  return `"${name}" can't be moved from the timeline.\n\n` +
+    `Its dates are calculated from the Dev and QA tasks it spans ` +
+    `(Start = earliest of the two, End = latest), so dragging it would ` +
+    `overwrite those formulas and break the link.\n\n` +
+    `Move the related Dev or QA task instead — this one will follow automatically.`;
+}
+
 function colorForActivity(activity) {
   const key = activityKey(activity);
   if (!activityColors.has(key)) {
@@ -2014,7 +2039,7 @@ function render() {
       const width = Math.max(pxPerDay * 0.6, (dayOffset(t.end) - dayOffset(t.start) + 1) * pxPerDay - 2);
       const top = y + t.subRow * ROW_H + 4;
       const bar = document.createElement("div");
-      bar.className = "bar";
+      bar.className = "bar" + (isDerivedTask(t) ? " derived" : "");
       bar.style.background = t.color;
       bar.style.left = left + "px";
       bar.style.top = top + "px";
@@ -2288,10 +2313,11 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
   bar.addEventListener("pointermove", (e) => {
     if (!mode) return;
     lastClientX = e.clientX; lastClientY = e.clientY;
-    // View-only accounts: track pointer movement (so a plain click below
-    // still opens the modal) but skip every date/position mutation, so
-    // dragging has no visible effect and never reaches a doomed sheet write.
-    if (readOnlyMode) return;
+    // View-only accounts, and tasks whose dates are derived from siblings:
+    // track pointer movement (so a plain click below still opens the modal)
+    // but skip every date/position mutation, so dragging has no visible
+    // effect and never reaches a doomed sheet write.
+    if (readOnlyMode || isDerivedTask(t)) return;
     const deltaPx = e.clientX - startX;
     // Since weekends/holidays are compressed out of the grid, each pixel
     // column IS a working day — so the drag delta maps directly to an
@@ -2360,6 +2386,18 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
       t.start = new Date(origStart); t.end = new Date(origEnd); // discard any sub-pixel jitter
       render();
       openTaskModal(t);
+      return;
+    }
+
+    // Derived task, and the pointer actually travelled — pointermove already
+    // refused to move it, so say why instead of leaving the drag to fail
+    // silently. Nothing was mutated, so there is nothing to revert or write.
+    if (isDerivedTask(t)) {
+      mode = null;
+      render();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      window.alert(derivedTaskMessage(t));
+      setStatus(`"${t.taskName || t.label}" is not editable from the timeline · ${new Date().toLocaleTimeString()}`);
       return;
     }
 
@@ -2990,6 +3028,20 @@ function openTaskModal(t) {
     saveDetailsBtn.disabled = true;
     warn.style.display = "block";
     warn.textContent = "You have view-only access to this sheet — estimate, workload, and Start-formula changes can't be saved.";
+  } else if (isDerivedTask(t)) {
+    // Same reason the timeline refuses to drag this task: Estimate/Workload
+    // and the chain button all rewrite the Start or End cell, which here is a
+    // MIN/MAX formula spanning the Dev and QA rows. The Details tab stays
+    // editable — renaming or restatusing it is harmless.
+    estInput.disabled = true;
+    workloadInput.disabled = true;
+    recalcBtn.disabled = true;
+    chainBtn.disabled = true;
+    detailInputs.forEach((el) => { el.disabled = false; });
+    saveDetailsBtn.disabled = false;
+    saveDetailsBtn.textContent = "Save details";
+    warn.style.display = "block";
+    warn.textContent = "Dates are calculated from the Dev and QA tasks this one spans, so Start, End, Estimate and Workload can't be changed here. Move the related Dev or QA task instead.";
   } else {
     estInput.disabled = false;
     chainBtn.disabled = false;
