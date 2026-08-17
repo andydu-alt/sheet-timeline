@@ -2021,12 +2021,17 @@ function render() {
       bar.style.width = width + "px";
       bar.dataset.idx = idx;
 
-      // Full text is always Feature/Improvement/Support + Activity — never
-      // truncated. It always sits anchored at the bar's real start date;
-      // if it's longer than the bar, it simply spills past the colored
-      // area onto the plain background (readable via the white text halo)
-      // rather than being clipped or bumped to a floating label.
-      const fullText = t.activity ? `${t.label} • ${t.activity}` : t.label;
+      // Full text is Feature/Improvement/Support + the task's own name — never
+      // truncated. The task name comes from the Task column, which is the
+      // specific thing being done ("Code update base on result of code
+      // review"); Activity is only the generic bucket it falls into ("Bug
+      // Fixing"), so it's the fallback for rows that leave Task blank.
+      // It always sits anchored at the bar's real start date; if it's longer
+      // than the bar, it simply spills past the colored area onto the plain
+      // background (readable via the white text halo) rather than being
+      // clipped or bumped to a floating label.
+      const barDetail = (t.taskName || "").trim() || (t.activity || "").trim();
+      const fullText = barDetail ? `${t.label} • ${barDetail}` : t.label;
       bar.title = fullText;
       bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
         <div class="handle left"></div><div class="handle right"></div>`;
@@ -2183,6 +2188,7 @@ function attachTooltip(bar, t) {
   bar.addEventListener("mouseenter", (e) => {
     tip.innerHTML = `<b>${escapeHtml(t.feature || t.taskName || t.activity)}</b><br>
       ${t.jira ? "JIRA: " + escapeHtml(t.jira) + "<br>" : ""}
+      ${t.taskName ? "Task: " + escapeHtml(t.taskName) + "<br>" : ""}
       ${t.activity ? "Activity: " + escapeHtml(t.activity) + "<br>" : ""}
       Assignee: ${escapeHtml(t.assignee)}<br>
       ${fmtDate(t.start)} → ${fmtDate(t.end)}<br>
