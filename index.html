@@ -492,8 +492,9 @@ const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleuse
    HEADER TEXT of every column the app needs — never a hardcoded column
    letter or index. These sheets do NOT share a layout (the Database sheet has
    no Department column, so Start/End/Est land one column to the left of where
-   Core has them; IT DR puts Status before Forecast?), which is exactly the
-   kind of drift that silently breaks a hand-maintained letter map: a
+   Core has them; IT DR puts Status before Forecast?; Database's own Status
+   column sits one column earlier still), which is exactly the kind of drift
+   that silently breaks a hand-maintained letter map: a
    hardcoded "H" is only ever right for the one sheet it was written against.
    Resolving by header name at load time (see resolveColumns() below) means a
    column can move, and a brand-new source only needs its header text listed
@@ -522,23 +523,30 @@ const SOURCES = {
   },
   "database": {
     LABEL: "Database",
-    SPREADSHEET_ID: "1MgMxS3NxYiDE6ew0EgHJfbevx4ddU6Z37_JL4n3ENJM",
-    SHEET_NAME: "Raw Data",
-    SHEET_ID: 1496007209,
+    // Same workbook as Core (General) and IT DR — a different tab, so it
+    // shares that file's Holidays sheet. (Previously pointed at a separate
+    // "Database - Resource Status" spreadsheet; moved onto this tab so all
+    // three product lines live in one workbook.)
+    SPREADSHEET_ID: "1mM_6BOF2_XsmXJudqXMic95eAmxAShVBfbILxm7F86I",
+    SHEET_NAME: "Database Raw Data",
+    SHEET_ID: 445658258,
     HOLIDAYS_RANGE: "Holidays!B1:B300",
     HOLIDAYS_ARG: "Holidays!$B$2:$B",
     HEADERS: {
       ASSIGNEE: "Assignee", JIRA: "JIRA ID", FEATURE: "Feature/Improvement/Support",
-      TASKS: "Tasks", ACTIVITY: "Activity", START: "Start date", END: "End date", EST: "Est",
+      TASKS: ["Task", "Tasks"], ACTIVITY: "Activity", START: "Start date", END: "End date", EST: "Est",
+      // Unlike the old standalone Database sheet, Status here has its own
+      // real header — no COL_OVERRIDE needed.
+      STATUS: "Status",
       // No DEPT header in this sheet at all — omitted, resolves to "not present".
     },
-    // Status (column I) has a BLANK header in this sheet — "Groupby" and
-    // "Approved" are its neighbours' headers, not its own — so it cannot be
-    // found by name. This is the one deliberate positional exception; every
-    // other column above resolves by header text.
-    COL_OVERRIDE: { STATUS: 8 },
-    // Fixed set of accepted values, so the Add-task dropdown can't offer the
-    // stray values ("On train", …) that are already sitting in this column.
+    // Fixed set of accepted values for the Add-task/task-detail dropdown. This
+    // sheet's real Status column is messier than Core/IT DR's — "Not Start"
+    // and "Not Started" both appear, plus one-off values like "Implementation"
+    // and "Spec on Dev/QA Mgr" — so read-from-sheet would surface that
+    // inconsistency in the picker. Existing rows using any value still load
+    // and display normally regardless of this list; it only limits what a
+    // NEW pick offers.
     STATUS_OPTIONS: ["Done", "In Progress", "Not Start"],
   },
   "it-dr": {
@@ -644,7 +652,14 @@ applySourceToConfig();
 // Per-product-line localStorage keys. Manual row order and the assignee /
 // activity filter selections are keyed by row number and by name, so they are
 // meaningless across sheets and must never leak from one product line to the other.
-function nsKey(base) { return `${base}::${sourceId}`; }
+// Namespaced by sourceId AND which actual spreadsheet/tab it currently points
+// at — not sourceId alone. A product line's underlying sheet can be
+// re-pointed (as "database" was, from a standalone workbook onto this shared
+// one) while keeping the same sourceId string; keying on sourceId alone would
+// silently replay the OLD sheet's saved manual row order and filter
+// selections against the new sheet's completely different rows. Appending
+// the spreadsheet+tab id makes a re-point start clean automatically.
+function nsKey(base) { return `${base}::${sourceId}::${CONFIG.SPREADSHEET_ID}::${CONFIG.SHEET_ID}`; }
 
 let LABEL_W = 118; // 0 in mobile mode — the frozen label column is replaced by a scroll-synced banner instead
 let laneScrollRanges = []; // [{name, yStart}] in body-row-relative Y, rebuilt each render() — drives the mobile assignee banner
