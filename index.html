@@ -909,7 +909,7 @@ async function applySnapshot(snapshot) {
     t.activity = d.activity;
     t.assignee = d.assignee;
     t.status = d.status;
-    t.label = t.feature || t.taskName || t.activity || "Task";
+    t.label = taskDisplayLabel(t.feature, t.taskName, t.activity);
     t.color = colorForActivity(t.activity);
 
     const fields = new Set();
@@ -1418,6 +1418,13 @@ function buildEndFormula(rowNum, workload) {
   return `=WORKDAY(${CONFIG.A1.START}${rowNum},${CONFIG.A1.EST}${rowNum}*100/${workload},${CONFIG.HOLIDAYS_ARG})`;
 }
 
+// Display name of a task: Feature first, then the fallbacks. Sources whose Task
+// column is long free text (BAR_DETAIL: "activity") skip it and use Activity.
+function taskDisplayLabel(feature, taskName, activity) {
+  const skipTask = CONFIG.BAR_DETAIL === "activity";
+  return (feature || "").trim() || (skipTask ? "" : (taskName || "").trim()) || (activity || "").trim() || "Task";
+}
+
 function activityKey(activity) {
   return (activity || "Uncategorized").trim() || "Uncategorized";
 }
@@ -1515,7 +1522,7 @@ async function loadData() {
         est: estRaw,
         estNum: isNaN(estNum) ? null : estNum,
         status: row[C.STATUS] || "",
-        label: (row[C.FEATURE] || row[C.TASKS] || row[C.ACTIVITY] || "Task"),
+        label: taskDisplayLabel(row[C.FEATURE], row[C.TASKS], row[C.ACTIVITY]),
         color: colorForActivity(activity),
         startIsFormula,
         endIsFormula,
@@ -2234,7 +2241,7 @@ function jiraUrl(raw) {
 function attachTooltip(bar, t) {
   const tip = document.getElementById("tooltip");
   bar.addEventListener("mouseenter", (e) => {
-    tip.innerHTML = `<b>${escapeHtml(t.feature || t.taskName || t.activity)}</b><br>
+    tip.innerHTML = `<b>${escapeHtml(t.label)}</b><br>
       ${t.jira ? "JIRA: " + escapeHtml(t.jira) + "<br>" : ""}
       ${t.taskName ? "Task: " + escapeHtml(t.taskName) + "<br>" : ""}
       ${t.activity ? "Activity: " + escapeHtml(t.activity) + "<br>" : ""}
@@ -3122,7 +3129,7 @@ document.getElementById("tm-save-details").addEventListener("click", async () =>
   t.activity = activity;
   t.assignee = assignee;
   t.status = status;
-  t.label = t.feature || t.taskName || t.activity || "Task";
+  t.label = taskDisplayLabel(t.feature, t.taskName, t.activity);
   t.color = colorForActivity(t.activity);
 
   setStatus(`Saving row ${t.rowNum} (details)…`, false, true);
