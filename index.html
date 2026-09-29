@@ -486,6 +486,8 @@
 /* ============================================================
    CONFIG — fill these in before deploying
    ============================================================ */
+// Shown in the load status line so it is obvious which copy of the page is running.
+const BUILD_ID = "2026-09-29-c";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -1579,7 +1581,7 @@ async function loadData() {
     buildLanes();
     render();
     requestAnimationFrame(() => landOnInitialView()); // land on Today, or the earliest task if today is off-range
-    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""}${skippedNoAssignee ? ` · ⚠ ${skippedNoAssignee} hidden (no Assignee)` : ""} · ${new Date().toLocaleTimeString()}`);
+    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""}${skippedNoAssignee ? ` · ⚠ ${skippedNoAssignee} hidden (no Assignee)` : ""} · ${new Date().toLocaleTimeString()} · build ${BUILD_ID} · ${sourceId}/${CONFIG.BAR_DETAIL || "task"}`);
   } catch (err) {
     console.error(err);
     setStatus("Load failed: " + err.message, true);
