@@ -549,7 +549,7 @@ const SOURCES = {
     // and display normally regardless of this list; it only limits what a
     // NEW pick offers.
     STATUS_OPTIONS: ["Done", "In Progress", "Not Start"],
-    // Bar text is "Feature • Activity" here, not "Feature • Task".
+    // Bar text is "Feature • Activity", falling back to "Feature • Task" if Activity is blank.
     BAR_DETAIL: "activity",
   },
   "it-dr": {
@@ -1418,11 +1418,12 @@ function buildEndFormula(rowNum, workload) {
   return `=WORKDAY(${CONFIG.A1.START}${rowNum},${CONFIG.A1.EST}${rowNum}*100/${workload},${CONFIG.HOLIDAYS_ARG})`;
 }
 
-// Display name of a task: Feature first, then the fallbacks. Sources whose Task
-// column is long free text (BAR_DETAIL: "activity") skip it and use Activity.
+// Display name of a task: Feature first, then the fallbacks. Sources with
+// BAR_DETAIL: "activity" prefer Activity over the Task column (Task is only the
+// fallback); everything else prefers Task and falls back to Activity.
 function taskDisplayLabel(feature, taskName, activity) {
-  const skipTask = CONFIG.BAR_DETAIL === "activity";
-  return (feature || "").trim() || (skipTask ? "" : (taskName || "").trim()) || (activity || "").trim() || "Task";
+  const f = (feature || "").trim(), t = (taskName || "").trim(), a = (activity || "").trim();
+  return f || (CONFIG.BAR_DETAIL === "activity" ? (a || t) : (t || a)) || "Task";
 }
 
 function activityKey(activity) {
@@ -2080,12 +2081,11 @@ function render() {
       // than the bar, it simply spills past the colored area onto the plain
       // background (readable via the white text halo) rather than being
       // clipped or bumped to a floating label.
-      // A source can opt out of the Task name (BAR_DETAIL: "activity") when its
-      // Task column is long free text — Database's "Tasks / Alloc %" holds
-      // things like "Bugs verification (15% of QA estimate)".
-      const barDetail = CONFIG.BAR_DETAIL === "activity"
-        ? (t.activity || "").trim()
-        : (t.taskName || "").trim() || (t.activity || "").trim();
+      // BAR_DETAIL: "activity" flips the order to Activity first, Task as the
+      // fallback — Database's "Tasks / Alloc %" often holds long notes or a bare
+      // allocation like "50.%", so Activity is the better default there.
+      const actTxt = (t.activity || "").trim(), taskTxt = (t.taskName || "").trim();
+      const barDetail = CONFIG.BAR_DETAIL === "activity" ? (actTxt || taskTxt) : (taskTxt || actTxt);
       const fullText = barDetail ? `${t.label} • ${barDetail}` : t.label;
       bar.title = fullText;
       bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
