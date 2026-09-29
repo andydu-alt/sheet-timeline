@@ -549,6 +549,8 @@ const SOURCES = {
     // and display normally regardless of this list; it only limits what a
     // NEW pick offers.
     STATUS_OPTIONS: ["Done", "In Progress", "Not Start"],
+    // Bar text is "Feature • Activity" here, not "Feature • Task".
+    BAR_DETAIL: "activity",
   },
   "it-dr": {
     LABEL: "IT DR",
@@ -645,7 +647,7 @@ function applySourceToConfig() {
   // the page today, so this is belt-and-braces, but it makes the function
   // correct on its own terms.
   ["LABEL","SPREADSHEET_ID","SHEET_NAME","SHEET_ID","HOLIDAYS_RANGE","HOLIDAYS_ARG",
-   "HEADERS","COL_OVERRIDE","STATUS_OPTIONS","COL","A1","LAST_COL"].forEach((k) => { delete CONFIG[k]; });
+   "HEADERS","COL_OVERRIDE","STATUS_OPTIONS","BAR_DETAIL","COL","A1","LAST_COL"].forEach((k) => { delete CONFIG[k]; });
   Object.assign(CONFIG, SOURCES[sourceId]);
 }
 applySourceToConfig();
@@ -2071,7 +2073,12 @@ function render() {
       // than the bar, it simply spills past the colored area onto the plain
       // background (readable via the white text halo) rather than being
       // clipped or bumped to a floating label.
-      const barDetail = (t.taskName || "").trim() || (t.activity || "").trim();
+      // A source can opt out of the Task name (BAR_DETAIL: "activity") when its
+      // Task column is long free text — Database's "Tasks / Alloc %" holds
+      // things like "Bugs verification (15% of QA estimate)".
+      const barDetail = CONFIG.BAR_DETAIL === "activity"
+        ? (t.activity || "").trim()
+        : (t.taskName || "").trim() || (t.activity || "").trim();
       const fullText = barDetail ? `${t.label} • ${barDetail}` : t.label;
       bar.title = fullText;
       bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
