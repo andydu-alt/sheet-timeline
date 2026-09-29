@@ -534,7 +534,8 @@ const SOURCES = {
     HOLIDAYS_ARG: "Holidays!$B$2:$B",
     HEADERS: {
       ASSIGNEE: "Assignee", JIRA: "JIRA ID", FEATURE: "Feature/Improvement/Support",
-      TASKS: ["Task", "Tasks"], ACTIVITY: "Activity", START: "Start date", END: "End date", EST: "Est",
+      // "Tasks / Alloc %" is the current header; older spellings kept as fallbacks.
+      TASKS: ["Tasks / Alloc %", "Task", "Tasks"], ACTIVITY: "Activity", START: "Start date", END: "End date", EST: "Est",
       // Unlike the old standalone Database sheet, Status here has its own
       // real header — no COL_OVERRIDE needed.
       STATUS: "Status",
