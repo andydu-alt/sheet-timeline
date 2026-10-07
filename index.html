@@ -487,7 +487,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-09-29-d";
+const BUILD_ID = "2026-10-07-a";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -569,6 +569,21 @@ const SOURCES = {
       // so a later rename in one place doesn't break the load.
       TASKS: ["Task", "Tasks"], ACTIVITY: "Activity", START: "Start date", END: "End date",
       EST: "Est", STATUS: "Status",
+    },
+  },
+  "physical": {
+    LABEL: "Physical",
+    // Same workbook — "Physical Raw Data" tab. Heads the assignee column
+    // "Name" and the estimate "Estimation", so those are aliased.
+    SPREADSHEET_ID: "1mM_6BOF2_XsmXJudqXMic95eAmxAShVBfbILxm7F86I",
+    SHEET_NAME: "Physical Raw Data",
+    SHEET_ID: 1128536940,
+    HOLIDAYS_RANGE: "Holidays!B1:B300",
+    HOLIDAYS_ARG: "Holidays!$B$2:$B",
+    HEADERS: {
+      ASSIGNEE: ["Assignee", "Name"], DEPT: "Department", JIRA: "JIRA ID", FEATURE: "Feature/Improvement/Support",
+      TASKS: ["Task", "Tasks"], ACTIVITY: "Activity", START: "Start date", END: "End date",
+      EST: ["Est", "Estimation"], STATUS: "Status",
     },
   },
 };
