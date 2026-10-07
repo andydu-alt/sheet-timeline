@@ -487,7 +487,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-07-a";
+const BUILD_ID = "2026-10-07-b";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -580,6 +580,7 @@ const SOURCES = {
     SHEET_ID: 1128536940,
     HOLIDAYS_RANGE: "Holidays!B1:B300",
     HOLIDAYS_ARG: "Holidays!$B$2:$B",
+    BAR_DETAIL: "activity", // "Feature • Activity", like Database
     HEADERS: {
       ASSIGNEE: ["Assignee", "Name"], DEPT: "Department", JIRA: "JIRA ID", FEATURE: "Feature/Improvement/Support",
       TASKS: ["Task", "Tasks"], ACTIVITY: "Activity", START: "Start date", END: "End date",
@@ -1464,8 +1465,16 @@ const DERIVED_TASK_RE = /\(\s*w?\s*D\s*&\s*Q\s*\)/i;
 function isDerivedTask(t) {
   return DERIVED_TASK_RE.test(t.activity || "") || DERIVED_TASK_RE.test(t.taskName || "");
 }
+// Full block name exactly as the bar shows it ("Feature • Activity" or
+// "Feature • Task", per BAR_DETAIL) — used in confirm dialogs so the user
+// sees which block they are acting on.
+function blockFullName(t) {
+  const actTxt = (t.activity || "").trim(), taskTxt = (t.taskName || "").trim();
+  const barDetail = CONFIG.BAR_DETAIL === "activity" ? (actTxt || taskTxt) : (taskTxt || actTxt);
+  return barDetail ? `${t.label} • ${barDetail}` : t.label;
+}
 function derivedTaskMessage(t) {
-  const name = t.taskName || t.label;
+  const name = blockFullName(t);
   return `"${name}" can't be moved from the timeline.\n\n` +
     `Its dates are calculated from the Dev and QA tasks it spans ` +
     `(Start = earliest of the two, End = latest), so dragging it would ` +
@@ -2101,9 +2110,7 @@ function render() {
       // BAR_DETAIL: "activity" flips the order to Activity first, Task as the
       // fallback — Database's "Tasks / Alloc %" often holds long notes or a bare
       // allocation like "50.%", so Activity is the better default there.
-      const actTxt = (t.activity || "").trim(), taskTxt = (t.taskName || "").trim();
-      const barDetail = CONFIG.BAR_DETAIL === "activity" ? (actTxt || taskTxt) : (taskTxt || actTxt);
-      const fullText = barDetail ? `${t.label} • ${barDetail}` : t.label;
+      const fullText = blockFullName(t);
       bar.title = fullText;
       bar.innerHTML = `<span class="bar-text">${escapeHtml(fullText)}</span>
         <div class="handle left"></div><div class="handle right"></div>`;
@@ -2444,7 +2451,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
       render();
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       window.alert(derivedTaskMessage(t));
-      setStatus(`"${t.taskName || t.label}" is not editable from the timeline · ${new Date().toLocaleTimeString()}`);
+      setStatus(`"${blockFullName(t)}" is not editable from the timeline · ${new Date().toLocaleTimeString()}`);
       return;
     }
 
@@ -2461,7 +2468,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     // walked back through the history.
     if (changed) {
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const movedName = t.taskName || t.label;
+      const movedName = blockFullName(t);
       const ok = window.confirm(
         `Move "${movedName}"?\n\n` +
         `From:  ${fmtDate(origStart)} – ${fmtDate(origEnd)}\n` +
@@ -2550,7 +2557,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         const shiftCols = dayOffset(t.end) - origEndIdx; // workday columns, not calendar days
         const verb = shiftCols > 0 ? "later" : "earlier";
         const ok = window.confirm(
-          `${Math.abs(shiftCols)} workday(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount to keep the dependency intact?`
+          `"${blockFullName(t)}" moved ${Math.abs(shiftCols)} workday(s) ${verb}. It has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount to keep the dependency intact?`
         );
         if (ok) {
           chainShifted = applyChainShift(chain, t.end);
@@ -2592,13 +2599,13 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         const alreadyChainedToPrev = m && parseInt(m[1], 10) === prevTask.rowNum;
         if (!alreadyChainedToPrev) {
           await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-          const prevName = prevTask.taskName || prevTask.label;
+          const prevName = blockFullName(prevTask);
           const snappedStart = excelWorkday(prevTask.end, 1);
           const snapNote = gap === 0
             ? ""
             : `\n\nIts Start will snap to ${fmtDate(snappedStart)} — the first working day after "${prevName}" ends (${fmtDate(prevTask.end)}).`;
           const ok = window.confirm(
-            `Make this task start right after "${prevName}"?${snapNote}\n\nChaining its Start formula to that task means it automatically follows whenever that task's schedule shifts.`
+            `Make "${blockFullName(t)}" start right after "${prevName}"?${snapNote}\n\nChaining its Start formula to that task means it automatically follows whenever that task's schedule shifts.`
           );
           if (ok) {
             // Captured before the snap so a plain-date End keeps the same
@@ -3283,7 +3290,7 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
           // first so the underlying page isn't left stuck mid-transition.
           await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
           const ok = window.confirm(
-            `${Math.abs(shiftCols)} workday(s) ${verb}. This task has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount (waterfall) to keep the dependency intact?`
+            `"${blockFullName(t)}" moved ${Math.abs(shiftCols)} workday(s) ${verb}. It has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount (waterfall) to keep the dependency intact?`
           );
           if (ok) {
             // Only write cells that aren't formula-driven — a formula Start
