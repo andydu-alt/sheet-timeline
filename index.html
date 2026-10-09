@@ -573,7 +573,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-n";
+const BUILD_ID = "2026-10-09-q";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -942,68 +942,21 @@ function snapshotState() {
 }
 
 /* ------------------------------------------------------------
-   Row-number remapping for history entries.
+   Row numbers in history entries are NEVER remapped.
 
-   Every stack entry addresses rows by sheet row number, so inserting or
-   deleting a row invalidates the entries recorded before it. Rather than
-   throwing the history away, we shift the stored row numbers to match — which
-   is what lets "add task" sit in the undo stack alongside drags and resizes.
-   dir = +1 for a row inserted at `pivot`, -1 for that row being removed again.
+   Both stacks are strictly last-in-first-out, and every row insert/delete is
+   itself an entry on them. So an entry is only ever replayed after everything
+   recorded after it has been reversed — i.e. against exactly the row layout it
+   was recorded in. (The old approach shifted every stored row number on each
+   insert/delete; a removal maps rows N and N+1 to the same number, so that
+   shifting was lossy: Delete + Undo ×2 could write a task's Start formula
+   pointing at its own row, or re-insert a deleted row in the wrong place.)
+   Only the LIVE manual-order map is shifted, since it describes the sheet as
+   it is now.
    ------------------------------------------------------------ */
 function shiftRowNum(r, pivot, dir) {
   if (dir > 0) return r >= pivot ? r + 1 : r;
   return r > pivot ? r - 1 : r;
-}
-
-// Our own chain formulas embed a row number (=WORKDAY(H37,1,Holidays…)). A
-// stored formula string is not touched by Sheets' own reference rewriting, so
-// shift the row inside it too, or a nested undo would restore a stale reference.
-function remapRowRefsInFormula(value, pivot, dir) {
-  if (typeof value !== "string" || !value.startsWith("=")) return value;
-  // The Holidays range is always the last argument and its row bounds must NOT
-  // move with a task row, so only the arguments before it are rewritten.
-  // Absolute references ($B$2, $B1344) are left alone for the same reason.
-  const cut = value.lastIndexOf(",");
-  const head = cut === -1 ? value : value.slice(0, cut);
-  const tail = cut === -1 ? "" : value.slice(cut);
-  const remapped = head.replace(/(\$?)([A-Z]{1,3})(\$?)(\d+)/g, (m, absCol, col, absRow, row) => {
-    if (absCol || absRow) return m; // absolute — not a task row reference
-    return col + shiftRowNum(parseInt(row, 10), pivot, dir);
-  });
-  return remapped + tail;
-}
-
-function remapHistoryEntry(entry, pivot, dir) {
-  if (!entry) return entry;
-  if (entry.kind === "insert") {
-    entry.clickedRowNum = shiftRowNum(entry.clickedRowNum, pivot, dir);
-    if (entry.shiftedRestore) {
-      entry.shiftedRestore.rowNum = shiftRowNum(entry.shiftedRestore.rowNum, pivot, dir);
-      entry.shiftedRestore.value = remapRowRefsInFormula(entry.shiftedRestore.value, pivot, dir);
-    }
-    entry.manualOrderBefore = remapManualOrderMap(entry.manualOrderBefore, pivot, dir);
-    return entry;
-  }
-  if (entry.kind === "delete") {
-    entry.rowNum = shiftRowNum(entry.rowNum, pivot, dir);
-    entry.rowValues = (entry.rowValues || []).map((v) => remapRowRefsInFormula(v, pivot, dir));
-    (entry.restores || []).forEach((r) => {
-      r.row = shiftRowNum(r.row, pivot, dir);
-      r.value = remapRowRefsInFormula(r.value, pivot, dir);
-    });
-    entry.manualOrderBefore = remapManualOrderMap(entry.manualOrderBefore, pivot, dir);
-    return entry;
-  }
-  // Plain state snapshot. On a delete, the removed row's own entry is dropped.
-  entry.dates = entry.dates
-    .filter((d) => !(dir < 0 && d.rowNum === pivot))
-    .map((d) => Object.assign(d, {
-      rowNum: shiftRowNum(d.rowNum, pivot, dir),
-      startFormulaRaw: remapRowRefsInFormula(d.startFormulaRaw, pivot, dir),
-      endFormulaRaw: remapRowRefsInFormula(d.endFormulaRaw, pivot, dir),
-    }));
-  entry.manualOrder = remapManualOrderMap(entry.manualOrder, pivot, dir);
-  return entry;
 }
 
 function remapManualOrderMap(map, pivot, dir) {
@@ -1016,12 +969,26 @@ function remapManualOrderMap(map, pivot, dir) {
   return out;
 }
 
-// Remaps every entry already on the stacks. `except` is the entry currently
-// being pushed or applied, which already carries the correct row numbers.
-function remapHistory(pivot, dir, except) {
-  [undoStack, redoStack].forEach((stack) => {
-    stack.forEach((entry) => { if (entry !== except) remapHistoryEntry(entry, pivot, dir); });
-  });
+// A row insert/delete that fails part-way leaves the sheet in a layout no
+// stored row number can be trusted against — drop the history and resync.
+async function historyFailed(what, err) {
+  console.error(err);
+  undoStack = []; redoStack = [];
+  updateUndoRedoButtons();
+  await loadData();
+  setStatus(`${what} — undo history cleared to keep the sheet safe; reloaded from the sheet. (${err.message})`, true);
+}
+
+/* One change at a time. Inserts, deletes and undo/redo address rows by
+   number; letting a second one start while the first is still writing (or
+   before the reload has re-read row numbers) writes into rows that just
+   moved — a double-clicked Undo overwrote the neighbouring task. */
+let opBusy = false;
+async function exclusive(fn) {
+  if (opBusy) { setStatus("Still saving the previous change — try again in a moment.", true); return; }
+  opBusy = true; updateUndoRedoButtons();
+  try { return await fn(); }
+  finally { opBusy = false; updateUndoRedoButtons(); }
 }
 
 function commitUndoPoint(preSnapshot) {
@@ -1133,7 +1100,10 @@ function restoreCellWrite(t, field) {
        undone by deleting the row again, redone by re-inserting it.
    An insert entry is its own inverse, so it moves between the stacks intact
    instead of being paired with a "current state" snapshot. */
-async function undo() {
+function undo() { return exclusive(undoStep); }
+function redo() { return exclusive(redoStep); }
+
+async function undoStep() {
   if (!undoStack.length) return;
   const entry = undoStack.pop();
   if (entry.kind === "delete") {
@@ -1157,7 +1127,7 @@ async function undo() {
   await applySnapshot(entry);
 }
 
-async function redo() {
+async function redoStep() {
   if (!redoStack.length) return;
   const entry = redoStack.pop();
   if (entry.kind === "delete") {
@@ -1185,10 +1155,10 @@ function updateUndoRedoButtons() {
   const undoBtn = document.getElementById("btn-undo");
   const redoBtn = document.getElementById("btn-redo");
   if (!undoBtn) return;
-  undoBtn.disabled = undoStack.length === 0;
+  undoBtn.disabled = opBusy || undoStack.length === 0;
   undoBtn.title = `Undo${undoStack.length ? ` (${undoStack.length})` : ""}`;
   document.getElementById("undo-count").textContent = undoStack.length || "";
-  redoBtn.disabled = redoStack.length === 0;
+  redoBtn.disabled = opBusy || redoStack.length === 0;
   redoBtn.title = `Redo${redoStack.length ? ` (${redoStack.length})` : ""}`;
   document.getElementById("redo-count").textContent = redoStack.length || "";
 }
@@ -1197,6 +1167,10 @@ document.getElementById("btn-undo").addEventListener("click", undo);
 document.getElementById("btn-redo").addEventListener("click", redo);
 document.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey)) return;
+  // Inside a text field Ctrl+Z is that field's own undo — never the sheet's.
+  // And no history step runs underneath an open dialog.
+  if (e.target && e.target.closest && e.target.closest("input, textarea, select, [contenteditable]")) return;
+  if (document.querySelector("#task-modal-backdrop.open, #new-task-backdrop.open")) return;
   const key = e.key.toLowerCase();
   if (key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
   else if (key === "y" || (key === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
@@ -1241,6 +1215,11 @@ function initAuth() {
       if (signedIn) { if (lastLoadFailed) loadData(); return; }
       onSignedIn();
     },
+    // Popup blocked or closed, or the Google session ended: say so, instead of
+    // the next save failing with a bare 401.
+    error_callback: (err) => {
+      setStatus(`Google sign-in ${signedIn ? "couldn't be renewed" : "didn't complete"} (${(err && err.type) || "error"}) — use Settings → Re-authenticate.`, true);
+    },
   });
 
   // Already signed in from the cached token at boot (see Boot) — the token
@@ -1252,9 +1231,11 @@ function initAuth() {
   tokenClient.requestAccessToken({ prompt: "" });
 }
 
+let refreshTimer = null;
 function scheduleSilentRefresh() {
+  clearTimeout(refreshTimer); // Re-authenticate used to stack a second timer
   const msUntilRefresh = Math.max(30000, tokenExpiryMs - Date.now() - 120000);
-  setTimeout(() => {
+  refreshTimer = setTimeout(() => {
     if (tokenClient) tokenClient.requestAccessToken({ prompt: "" });
   }, msUntilRefresh);
 }
@@ -1414,6 +1395,7 @@ document.getElementById("drawer-backdrop").addEventListener("click", () => setDr
   let panning = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
   wrap.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".bar") || e.target.closest(".ext-label") || e.target.closest(".lane-label")) return;
+    if (e.target.closest("button, a, input, select, textarea, label")) return; // e.g. the empty-state "Show all"
     panning = true;
     startX = e.clientX; startY = e.clientY;
     startLeft = wrap.scrollLeft; startTop = wrap.scrollTop;
@@ -1446,6 +1428,7 @@ function setStatus(msg, isError, saving) {
   el.className = isError ? "error" : (saving ? "saving" : "");
 }
 
+let lastSilentRenew = 0;
 async function sheetsFetch(path, opts = {}) {
   const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}${path}`, {
     ...opts,
@@ -1453,6 +1436,17 @@ async function sheetsFetch(path, opts = {}) {
   });
   if (!res.ok) {
     const body = await res.text();
+    if (res.status === 401) {
+      // Expired or revoked token: try a silent renewal (its callback retries a
+      // failed load) and say what's going on instead of a raw API error.
+      if (tokenClient && Date.now() - lastSilentRenew > 30000) {
+        lastSilentRenew = Date.now();
+        tokenClient.requestAccessToken({ prompt: "" });
+      }
+      const err = new Error("Your Google sign-in has expired — renewing it now; if this keeps happening, use Settings → Re-authenticate.");
+      err.status = 401;
+      throw err;
+    }
     const err = new Error(`Sheets API ${res.status}: ${body}`);
     err.status = res.status; // lets callers distinguish 403 (no edit permission) from other failures
     throw err;
@@ -1537,14 +1531,20 @@ function clearSaveFailure() {
 document.getElementById("save-error-dismiss").addEventListener("click", clearSaveFailure);
 document.getElementById("save-error-reload").addEventListener("click", () => { clearSaveFailure(); loadData(); });
 
+// Accepts M/D/YYYY, M-D-YYYY, M/D/YY and YYYY-MM-DD. Rejects impossible
+// dates instead of rolling them over (13/1/2026 used to become Jan 1, 2027).
 function parseDate(str) {
-  if (!str) return null;
-  str = str.trim();
-  let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-  if (!m) return null;
-  const month = parseInt(m[1], 10), day = parseInt(m[2], 10), year = parseInt(m[3], 10);
+  if (str === null || str === undefined || str === "") return null;
+  str = String(str).trim();
+  let m, year, month, day;
+  if ((m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4}|\d{2})$/))) {
+    month = +m[1]; day = +m[2]; year = +m[3] + (m[3].length === 2 ? 2000 : 0);
+  } else if ((m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) {
+    year = +m[1]; month = +m[2]; day = +m[3];
+  } else return null;
   const d = new Date(year, month - 1, day);
-  return isNaN(d.getTime()) ? null : d;
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  return d;
 }
 
 function fmtDate(d) {
@@ -1577,7 +1577,7 @@ function excelWorkday(start, numDaysRaw) {
 function parseWorkdayFormula(formula) {
   if (!formula) return null;
   const m = formula.match(
-    /WORKDAY\(\s*([A-Z]+\d+)\s*,\s*([A-Z]+\d+)\s*\*\s*([\d.]+)\s*(?:\/\s*([\d.]+)\s*)?(?:([+-])\s*([\d.]+)\s*)?,\s*(.+)\)\s*$/i
+    /^=\s*WORKDAY\(\s*([A-Z]+\d+)\s*,\s*([A-Z]+\d+)\s*\*\s*([\d.]+)\s*(?:\/\s*([\d.]+)\s*)?(?:([+-])\s*([\d.]+)\s*)?,\s*([^()]+?)\s*\)\s*$/i
   );
   if (!m) return null;
   const mult = parseFloat(m[3]);
@@ -1696,6 +1696,7 @@ async function loadData() {
       got = await fetchSheetRows(width);
     }
     if (holidaysP) await holidaysP;
+    while (dragActive) await new Promise((r) => setTimeout(r, 100)); // never swap tasks under a held bar
     if (seq !== loadSeq) return; // superseded — the newer load will render
     resolveColumns(got.header);
     try { localStorage.setItem(lastColKey(), CONFIG.LAST_COL); } catch (_) {}
@@ -1707,7 +1708,8 @@ async function loadData() {
     activityColors = new Map();
     let skippedSentinel = 0;
     let skippedAggregate = 0;
-    let skippedNoAssignee = 0; // has dates, but no Assignee — invisible unless reported
+    let skippedNoAssignee = 0;
+    let skippedBadDate = 0; // has an Assignee, but a date cell that can't be read // has dates, but no Assignee — invisible unless reported
     rows.forEach((row, i) => {
       const assignee = (row[C.ASSIGNEE] || "").trim();
       const start = parseDate(row[C.START]);
@@ -1716,6 +1718,9 @@ async function loadData() {
       // cannot place (lanes ARE assignees), so it silently disappears. Count it
       // and surface the number, rather than letting work quietly go missing.
       if (!assignee && start && end) { skippedNoAssignee++; return; }
+      // A task row whose date cell holds something unreadable (#REF!, text)
+      // used to vanish without a trace — count it so the status line says so.
+      if (assignee && ((row[C.START] && !start) || (row[C.END] && !end))) { skippedBadDate++; return; }
       if (!assignee || !start || !end) return; // skip blank/header/incomplete rows
       if (start.getFullYear() < MIN_SANE_YEAR || end.getFullYear() < MIN_SANE_YEAR) { skippedSentinel++; return; }
       const activity = (row[C.ACTIVITY] || "").trim();
@@ -1754,7 +1759,7 @@ async function loadData() {
     if (selectedAssignees === null) {
       // First load this session: restore the saved selection if we have one,
       // otherwise default to everyone selected.
-      selectedAssignees = uiState.assignees ? new Set(uiState.assignees) : new Set(tasks.map(t => t.assignee));
+      selectedAssignees = restoreSelection("assignees");
     } else {
       // keep previous selection, but add any brand-new assignees as selected
       const allNames = new Set(tasks.map(t => t.assignee));
@@ -1763,7 +1768,7 @@ async function loadData() {
     everSeenAssignees = new Set(tasks.map(t => t.assignee));
 
     if (selectedFeatures === null) {
-      selectedFeatures = uiState.features ? new Set(uiState.features) : new Set(tasks.map(t => featureKey(t.feature)));
+      selectedFeatures = restoreSelection("features");
     } else {
       // A feature that only appeared after the last load would otherwise be
       // silently filtered out — default newcomers to visible.
@@ -1772,7 +1777,7 @@ async function loadData() {
     tasks.forEach(t => everSeenFeatures.add(featureKey(t.feature)));
 
     if (selectedActivities === null) {
-      selectedActivities = uiState.activities ? new Set(uiState.activities) : new Set(tasks.map(t => activityKey(t.activity)));
+      selectedActivities = restoreSelection("activities");
     } else {
       const allActivities = new Set(tasks.map(t => activityKey(t.activity)));
       allActivities.forEach(a => { if (!selectedActivities.has(a) && !everSeenActivities.has(a)) selectedActivities.add(a); });
@@ -1802,7 +1807,7 @@ async function loadData() {
     if (!firstLoadDone) requestAnimationFrame(() => landOnInitialView());
     firstLoadDone = true;
     lastLoadFailed = false;
-    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""}${skippedNoAssignee ? ` · ⚠ ${skippedNoAssignee} hidden (no Assignee)` : ""} · ${new Date().toLocaleTimeString()} · build ${BUILD_ID} · ${sourceId}/${CONFIG.BAR_DETAIL || "task"}`);
+    setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""}${skippedNoAssignee ? ` · ⚠ ${skippedNoAssignee} hidden (no Assignee)` : ""}${skippedBadDate ? ` · ⚠ ${skippedBadDate} hidden (unreadable date)` : ""} · ${new Date().toLocaleTimeString()} · build ${BUILD_ID} · ${sourceId}/${CONFIG.BAR_DETAIL || "task"}`);
   } catch (err) {
     console.error(err);
     if (seq !== loadSeq) return;
@@ -1860,11 +1865,11 @@ function buildAssigneePanel() {
   const counts = new Map();
   tasks.forEach(t => counts.set(t.assignee, (counts.get(t.assignee) || 0) + 1));
   const names = Array.from(counts.keys()).sort();
-  names.forEach((name) => {
+  names.forEach((name, i) => {
     const row = document.createElement("div");
     row.className = "assignee-row";
     row.dataset.name = name.toLowerCase();
-    const id = "asg_" + name.replace(/[^a-z0-9]/gi, "_");
+    const id = "asg_" + i;
     row.innerHTML = `<input type="checkbox" id="${id}" ${selectedAssignees.has(name) ? "checked" : ""}>
       <label for="${id}">${escapeHtml(name)} <span style="color:var(--muted);">(${counts.get(name)})</span></label>`;
     row.querySelector("input").addEventListener("change", (e) => {
@@ -1874,6 +1879,7 @@ function buildAssigneePanel() {
     });
     list.appendChild(row);
   });
+  applyPanelSearch("assignee");
 }
 
 document.getElementById("btn-assignee").addEventListener("click", (e) => {
@@ -1916,9 +1922,54 @@ document.getElementById("assignee-none").addEventListener("click", () => {
   buildAssigneePanel(); buildLanes(); render();
 });
 
-function persistAssigneeSelection() {
-  uiState.assignees = Array.from(selectedAssignees);
-  saveUiState();
+function persistAssigneeSelection() { persistSelection("assignees", selectedAssignees); }
+
+/* Filters are saved as the names you HID, not the ones shown. A saved
+   "shown" list hid every assignee/activity/feature that first appeared after
+   it was saved — a task added under a new Feature name stayed invisible for
+   good. A list in the old format is converted on first load. */
+function namesNow(kind) {
+  if (kind === "assignees") return [...new Set(tasks.map((t) => t.assignee))];
+  if (kind === "activities") return [...new Set(tasks.map((t) => activityKey(t.activity)))];
+  return [...new Set(tasks.map((t) => featureKey(t.feature)))];
+}
+function restoreSelection(kind) {
+  const all = namesNow(kind);
+  const hidden = uiState["hidden_" + kind];
+  if (Array.isArray(hidden)) { const h = new Set(hidden); return new Set(all.filter((n) => !h.has(n))); }
+  if (Array.isArray(uiState[kind])) {
+    const shown = new Set(uiState[kind]);
+    uiState["hidden_" + kind] = all.filter((n) => !shown.has(n));
+    uiState[kind] = null;
+    try { saveUiState(); } catch (_) {}
+    return shown;
+  }
+  return new Set(all);
+}
+function persistSelection(kind, selected) {
+  uiState["hidden_" + kind] = namesNow(kind).filter((n) => !selected.has(n));
+  uiState[kind] = null;
+  try { saveUiState(); } catch (_) {}
+}
+// Re-applies a panel's search box after the list is rebuilt (All/None used
+// to show every row again while the search text stayed in the box).
+function applyPanelSearch(kind) {
+  const q = (document.getElementById(kind + "-search").value || "").toLowerCase();
+  document.querySelectorAll(`#${kind}-list .assignee-row`).forEach((row) => {
+    row.style.display = row.dataset.name.includes(q) ? "flex" : "none";
+  });
+}
+// Button labels double as filter status ("Assignees (3/10)").
+function updateFilterButtons() {
+  [["assignees", "btn-assignee", "Assignees", selectedAssignees],
+   ["activities", "btn-activity", "Activities", selectedActivities],
+   ["features", "btn-feature", "Features", selectedFeatures]].forEach(([kind, id, label, sel]) => {
+    const btn = document.getElementById(id);
+    if (!btn || !sel) return;
+    const all = namesNow(kind);
+    const on = all.filter((n) => sel.has(n)).length;
+    btn.textContent = (on >= all.length ? label : `${label} (${on}/${all.length})`) + " ▾";
+  });
 }
 
 /* ============================================================
@@ -1930,11 +1981,11 @@ function buildActivityPanel() {
   const counts = new Map();
   tasks.forEach(t => { const k = activityKey(t.activity); counts.set(k, (counts.get(k) || 0) + 1); });
   const names = Array.from(counts.keys()).sort();
-  names.forEach((name) => {
+  names.forEach((name, i) => {
     const row = document.createElement("div");
     row.className = "assignee-row";
     row.dataset.name = name.toLowerCase();
-    const id = "act_" + name.replace(/[^a-z0-9]/gi, "_");
+    const id = "act_" + i;
     row.innerHTML = `<input type="checkbox" id="${id}" ${selectedActivities.has(name) ? "checked" : ""}>
       <label for="${id}"><span class="dot" style="background:${colorForActivity(name)};"></span>${escapeHtml(name)} <span style="color:var(--muted);">(${counts.get(name)})</span></label>`;
     row.querySelector("input").addEventListener("change", (e) => {
@@ -1944,6 +1995,7 @@ function buildActivityPanel() {
     });
     list.appendChild(row);
   });
+  applyPanelSearch("activity");
 }
 
 document.getElementById("btn-activity").addEventListener("click", (e) => {
@@ -1975,10 +2027,7 @@ document.getElementById("activity-none").addEventListener("click", () => {
   buildActivityPanel(); buildLanes(); render();
 });
 
-function persistActivitySelection() {
-  uiState.activities = Array.from(selectedActivities);
-  saveUiState();
-}
+function persistActivitySelection() { persistSelection("activities", selectedActivities); }
 
 /* ============================================================
    Feature filter panel — same multi-select shape as Activities,
@@ -1990,11 +2039,11 @@ function buildFeaturePanel() {
   const counts = new Map();
   tasks.forEach(t => { const k = featureKey(t.feature); counts.set(k, (counts.get(k) || 0) + 1); });
   const names = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b));
-  names.forEach((name) => {
+  names.forEach((name, i) => {
     const row = document.createElement("div");
     row.className = "assignee-row";
     row.dataset.name = name.toLowerCase();
-    const id = "feat_" + name.replace(/[^a-z0-9]/gi, "_");
+    const id = "feat_" + i;
     row.innerHTML = `<input type="checkbox" id="${id}" ${selectedFeatures.has(name) ? "checked" : ""}>
       <label for="${id}">${escapeHtml(name)} <span style="color:var(--muted);">(${counts.get(name)})</span></label>`;
     row.querySelector("input").addEventListener("change", (e) => {
@@ -2005,18 +2054,13 @@ function buildFeaturePanel() {
     });
     list.appendChild(row);
   });
+  applyPanelSearch("feature");
   updateFeatureButton();
 }
 
 // Button label doubles as the filter's status, so an active filter is
 // obvious without opening the panel.
-function updateFeatureButton() {
-  const btn = document.getElementById("btn-feature");
-  if (!btn) return;
-  const total = new Set(tasks.map(t => featureKey(t.feature))).size;
-  const on = Array.from(selectedFeatures).filter(f => f).length;
-  btn.textContent = (on >= total ? "Features" : `Features (${on}/${total})`) + " ▾";
-}
+function updateFeatureButton() { updateFilterButtons(); }
 
 document.getElementById("btn-feature").addEventListener("click", (e) => {
   if (!document.body.classList.contains("mobile-mode")) {
@@ -2055,10 +2099,7 @@ document.getElementById("feature-none").addEventListener("click", () => {
   buildFeaturePanel(); buildLanes(); render();
 });
 
-function persistFeatureSelection() {
-  uiState.features = Array.from(selectedFeatures);
-  saveUiState();
-}
+function persistFeatureSelection() { persistSelection("features", selectedFeatures); }
 
 /* ============================================================
    Lanes — one row per task, in priority order (manual drag order, else
@@ -2066,6 +2107,7 @@ function persistFeatureSelection() {
    which had a bug causing tasks to crowd/overlap onto the same row.
    ============================================================ */
 function buildLanes() {
+  updateFilterButtons();
   const byAssignee = new Map();
   tasks.forEach((t, idx) => {
     if (!selectedAssignees.has(t.assignee)) return;
@@ -2154,6 +2196,17 @@ function dayOffset(d) {
   return 0;
 }
 
+// Column of the first working day on or after `d`.
+function dayOffsetOnOrAfter(d) {
+  const x = new Date(d);
+  for (let i = 0; i < 20; i++) {
+    const k = dateKey(x);
+    if (workdayIndexMap.has(k)) return workdayIndexMap.get(k);
+    x.setDate(x.getDate() + 1);
+  }
+  return dayOffset(d);
+}
+
 // True when today actually falls inside the rendered calendar — with a year of
 // padding on each side this is almost always the case, but a filter that
 // isolates work years away from now can still push today outside it.
@@ -2178,7 +2231,20 @@ function landOnInitialView() {
 /* ============================================================
    Render
    ============================================================ */
+// True while a bar is held. Anything that would rebuild the grid (the
+// once-a-minute today-line refresh, the tail of an earlier drop's async
+// writes, a reload) must not run then: render() destroys the dragged bar,
+// its pointerup never fires, and the half-dragged dates stay unsaved. The
+// drag's own pointerup/pointercancel always re-renders, which covers any
+// render skipped here.
+let dragActive = false;
+// Safety net: if a held bar never gets its own pointerup (pointer lost, bar
+// replaced), don't leave rendering and reloads blocked for good.
+["pointerup", "pointercancel", "blur"].forEach((type) => window.addEventListener(type, () => {
+  setTimeout(() => { if (dragActive && !document.querySelector(".bar.dragging")) dragActive = false; }, 0);
+}, true));
 function render() {
+  if (dragActive) return;
   const grid = document.getElementById("grid");
   grid.innerHTML = "";
   if (!lanes.length) {
@@ -2221,10 +2287,13 @@ function render() {
     : new Date(minDate.getFullYear(), minDate.getMonth(), 1);
   while (cursor <= maxDate) {
     const next = new Date(cursor.getFullYear(), cursor.getMonth() + (useQuarters ? 3 : 1), 1);
-    const segStart = cursor < minDate ? minDate : cursor;
-    const segEnd = next < maxDate ? next : new Date(maxDate.getTime() + DAY_MS);
-    const left = LABEL_W + dayOffset(segStart) * pxPerDay;
-    const width = Math.max(1, (dayOffset(segEnd) - dayOffset(segStart)) * pxPerDay);
+    // A month starts at its first WORKING day: when the 1st is a weekend or
+    // holiday, the nearest-column lookup would pick the previous month's last
+    // Friday and draw the boundary one column early.
+    const startIdx = cursor < minDate ? 0 : dayOffsetOnOrAfter(cursor);
+    const endIdx = next <= maxDate ? dayOffsetOnOrAfter(next) : workdayList.length;
+    const left = LABEL_W + startIdx * pxPerDay;
+    const width = Math.max(1, (endIdx - startIdx) * pxPerDay);
     const cell = document.createElement("div");
     cell.className = "month-cell";
     cell.style.left = left + "px";
@@ -2368,7 +2437,7 @@ function render() {
     body.appendChild(line);
   });
 
-  if (todayX >= LABEL_W) {
+  if (todayInRange()) { // outside the range dayOffset clamps to an edge — no line there
     const line = document.createElement("div");
     line.className = "today-line";
     line.style.left = todayX + "px";
@@ -2519,12 +2588,14 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     if (e.button !== 0) return;
     // View-only accounts: block the interaction entirely — no drag, no
     // click-to-open-modal — rather than starting it and quietly no-op'ing.
-    if (readOnlyMode) return;
+    // Same while an insert/delete/undo is running: row numbers are in flux.
+    if (readOnlyMode || opBusy) return;
     if (e.target.classList.contains("handle")) {
       mode = e.target.classList.contains("left") ? "left" : "right";
     } else {
       mode = "move";
     }
+    dragActive = true;
     startX = e.clientX;
     startY = e.clientY;
     origStart = new Date(t.start);
@@ -2556,7 +2627,8 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     }
     document.getElementById("tooltip").style.display = "none";
     capturedPointerId = e.pointerId;
-    bar.setPointerCapture(e.pointerId); // keep receiving move events even if a finger slides off the bar
+    try { bar.setPointerCapture(e.pointerId); } // keep receiving move events even if a finger slides off the bar
+    catch (_) { capturedPointerId = null; }
     e.preventDefault();
     e.stopPropagation(); // don't also trigger canvas panning
   };
@@ -2615,6 +2687,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
 
   bar.addEventListener("pointerup", async (e) => {
     if (!mode) return;
+    dragActive = false;
     bar.classList.remove("dragging");
     bar.style.zIndex = "";
     // Release capture before this element is torn down by render(). iOS
@@ -2700,7 +2773,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         lane.idxs.splice(srcPos, 1);
         lane.idxs.splice(destPos, 0, idx);
         lane.idxs.forEach((ix, r) => { tasks[ix].subRow = r; });
-        manualOrder[lane.name] = lane.idxs.map(ix => tasks[ix].rowNum);
+        manualOrder[lane.name] = mergedLaneOrder(lane);
         saveManualOrder();
         reordered = true;
       }
@@ -2719,6 +2792,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     // browser has committed the paint BEFORE either dialog can block the thread.
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
+    try {
     let chainFormulaFixed = [];
     if (reordered) {
         // Reordering can leave a Start formula (=WORKDAY(H<prevRow>,1,...))
@@ -2726,7 +2800,9 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         // that mismatch is exactly what caused the row-packing confusion
         // last time. Offer to re-point those formulas at the new
         // predecessor and cascade the resulting date shift.
-        const fixups = findChainFormulaMismatches(lane);
+        // A re-point that would make a task follow one of its own dependents
+        // is left out — that is a circular reference (#REF! in the sheet).
+        const fixups = findChainFormulaMismatches(lane).filter((fx) => !startFormulaDescendants(fx.t).has(fx.newPrevTask));
         if (fixups.length) {
           const ok = window.confirm(
             `Reordering left ${fixups.length} Start-date formula${fixups.length > 1 ? "s" : ""} pointing at the wrong "previous task" (they still reference where this task used to sit).\n\nUpdate ${fixups.length > 1 ? "them" : "it"} to reference the new previous task, and shift the resulting dates?`
@@ -2747,30 +2823,17 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
         }
     }
 
-    // This task's End date moved — offer to shift any downstream task in the
-    // same lane whose Start date was chained to this task's (old) End date.
-    let chainShifted = [];
-    if ((wasMove || wasRight) && endChanged && lane) {
-      const chain = findDependencyChain(t, lane, origEnd);
-      if (chain.length) {
-        const shiftCols = dayOffset(t.end) - origEndIdx; // workday columns, not calendar days
-        const verb = shiftCols > 0 ? "later" : "earlier";
-        const ok = window.confirm(
-          `"${blockFullName(t)}" moved ${Math.abs(shiftCols)} workday(s) ${verb}. It has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount to keep the dependency intact?`
-        );
-        if (ok) {
-          chainShifted = applyChainShift(chain, t.end);
-        }
-      }
-    }
-
     // Dragging a task's Start to land immediately after the task above it
     // (same lane, previous priority slot) usually means the user WANTS that
     // dependency, not just a coincidental date match — offer to chain it the
     // same way the task-detail modal's "Chain start" button does, so future
     // moves of the task above automatically carry this one along.
+    // Runs BEFORE the downstream cascade below, so the cascade starts from
+    // this task's final (snapped) End. Only offered for a real change — a
+    // click on a handle that moved nothing doesn't prompt (and so can't write
+    // without an undo point).
     let chainedToPrev = false;
-    if ((wasMove || wasLeft) && lane) {
+    if ((wasMove || wasLeft) && lane && (changed || reordered)) {
       const pos = lane.idxs.indexOf(idx);
       // Which task did the drop actually land behind? The row directly above is
       // the usual answer, but a horizontal drag does NOT re-sort the lane, so
@@ -2781,9 +2844,12 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
       //
       // The gesture is hand-aimed, so accept anything within a day either side —
       // butted onto the last day, exactly adjacent, or one day short — and snap
-      // to true adjacency on accept.
+      // to true adjacency on accept. A task that already follows this one
+      // (directly or down a chain) is never offered: chaining back to it would
+      // be a circular reference.
       const startCol = dayOffset(t.start);
-      const fitsTail = (cand) => Math.abs(startCol - (dayOffset(cand.end) + 1)) <= CHAIN_SNAP_TOLERANCE_COLS;
+      const descendants = startFormulaDescendants(t);
+      const fitsTail = (cand) => !descendants.has(cand) && Math.abs(startCol - (dayOffset(cand.end) + 1)) <= CHAIN_SNAP_TOLERANCE_COLS;
       const above = pos > 0 ? tasks[lane.idxs[pos - 1]] : null;
       let prevTask = above && fitsTail(above) ? above : null;
       if (!prevTask) {
@@ -2824,7 +2890,7 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
               lane.idxs.splice(curPos, 1);
               lane.idxs.splice(lane.idxs.indexOf(prevIdx) + 1, 0, idx);
               lane.idxs.forEach((ix, r) => { tasks[ix].subRow = r; });
-              manualOrder[lane.name] = lane.idxs.map((ix) => tasks[ix].rowNum);
+              manualOrder[lane.name] = mergedLaneOrder(lane);
               saveManualOrder();
             }
             if (t.endIsFormula) {
@@ -2841,6 +2907,29 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
             chainedToPrev = true;
           }
         }
+      }
+    }
+
+    // This task's End date moved — offer to shift any downstream task in the
+    // same lane whose Start date was chained to this task's (old) End date.
+    // Declining pins the formula-linked ones where they are: their Start would
+    // otherwise still move in the sheet (it recomputes from this task's End)
+    // while the screen showed them unmoved, stretching any with a fixed End.
+    let chainShifted = [];
+    const endMovedNow = t.end.getTime() !== origEnd.getTime();
+    if ((wasMove || wasRight || chainedToPrev) && endMovedNow && lane) {
+      const chain = findDependencyChain(t, lane, origEnd);
+      if (chain.length) {
+        const shiftCols = dayOffset(t.end) - origEndIdx; // workday columns, not calendar days
+        const verb = shiftCols > 0 ? "later" : "earlier";
+        const many = chain.length > 1;
+        const ok = window.confirm(
+          `"${blockFullName(t)}" moved ${Math.abs(shiftCols)} workday(s) ${verb}. It has ${chain.length} downstream task${many ? "s" : ""} chained to start right after it ends.\n\n` +
+          `OK = shift ${many ? "them" : "it"} by the same amount (keeps the dependency)\n` +
+          `Cancel = leave ${many ? "them" : "it"} where ${many ? "they are" : "it is"} (a Start that follows this task by formula becomes a fixed date)`
+        );
+        if (ok) chainShifted = applyChainShift(chain, t.end);
+        else await pinFormulaDependents(t);
       }
     }
 
@@ -2866,11 +2955,20 @@ function attachDrag(bar, t, extLabel, lane, idx, origTop) {
     for (const { t: dep, origStart: dOrigStart, origEnd: dOrigEnd } of chainShifted) {
       await saveChangedFields(dep, dOrigStart, dOrigEnd);
     }
+    // Formula-linked tasks outside the chain just handled (a second task
+    // chained to the same one, a cross-lane formula, a MAX(WORKDAY(…)) Start)
+    // moved in the sheet only — reload so the screen matches it.
+    const moved = [t, ...chainShifted.map((c) => c.t), ...chainFormulaFixed.map((c) => c.t)];
+    if (hasUnhandledFormulaDependents(moved)) await loadData();
+    } catch (err) {
+      reportSaveFailure(`Row ${t.rowNum} change`, err);
+    }
   });
 
   bar.addEventListener("pointercancel", (e) => {
     if (!mode) return;
     mode = null;
+    dragActive = false;
     bar.classList.remove("dragging");
     bar.style.zIndex = "";
     if (capturedPointerId !== null) {
@@ -2944,6 +3042,79 @@ function findDependencyChain(anchorTask, lane, anchorOrigEnd) {
   return chain;
 }
 
+// Row numbers a formula references on THIS tab: single cells, plus every row
+// of a range (ranges over 500 rows — whole-block rollups — are skipped).
+function formulaReferencedRows(formula) {
+  const rows = new Set();
+  if (!formula) return rows;
+  const re = new RegExp(DEL_REF_RE.source, "g");
+  let m;
+  while ((m = re.exec(formula))) {
+    if (!delRefIsThisSheet(m[1])) continue;
+    const r1 = +m[5], r2 = m[9] === undefined ? r1 : (m[9] === "" ? Infinity : +m[9]);
+    const lo = Math.min(r1, r2), hi = Math.max(r1, r2);
+    if (hi - lo > 500) continue; // whole-block rollups and open-ended ranges
+    for (let r = lo; r <= hi; r++) rows.add(r);
+  }
+  return rows;
+}
+
+// Every task whose Start formula depends on `t` — directly or down a chain.
+// Chaining `t` behind any of them would be a circular reference.
+function startFormulaDescendants(t) {
+  const byRow = new Map(); // row -> tasks whose Start formula references it
+  for (const x of tasks) {
+    if (!x.startIsFormula) continue;
+    for (const r of formulaReferencedRows(x.startFormulaRaw)) {
+      if (r === x.rowNum) continue;
+      if (!byRow.has(r)) byRow.set(r, []);
+      byRow.get(r).push(x);
+    }
+  }
+  const out = new Set(), queue = [t];
+  while (queue.length) {
+    const y = queue.shift();
+    for (const x of byRow.get(y.rowNum) || []) if (x !== t && !out.has(x)) { out.add(x); queue.push(x); }
+  }
+  return out;
+}
+
+// Declined "shift dependents": every Start/End formula elsewhere that reads
+// `t`'s row would still move in the sheet, so turn each into the date it
+// shows now.
+async function pinFormulaDependents(t) {
+  let n = 0;
+  for (const x of tasks) {
+    if (x === t) continue;
+    if (x.startIsFormula && formulaReferencedRows(x.startFormulaRaw).has(t.rowNum)) { await saveField(x, "start"); n++; }
+    if (x.endIsFormula && formulaReferencedRows(x.endFormulaRaw).has(t.rowNum)) { await saveField(x, "end"); n++; }
+  }
+  return n;
+}
+
+// True if some task NOT in `moved` has a Start/End formula reading one of
+// their rows — i.e. the sheet moved something the screen didn't.
+function hasUnhandledFormulaDependents(moved) {
+  const rows = new Set(moved.map((x) => x.rowNum));
+  const handled = new Set(moved);
+  return tasks.some((x) => !handled.has(x) && [x.startIsFormula && x.startFormulaRaw, x.endIsFormula && x.endFormulaRaw]
+    .some((f) => f && [...formulaReferencedRows(f)].some((r) => r !== x.rowNum && rows.has(r))));
+}
+
+// The lane only holds the tasks visible under the current filters. Saving
+// just those would drop every hidden task out of the assignee's saved order
+// (they'd sink to the bottom once the filter is cleared), so the new visible
+// order is written into the visible slots of the FULL order instead.
+function mergedLaneOrder(lane) {
+  const visible = lane.idxs.map((ix) => tasks[ix].rowNum);
+  const visibleSet = new Set(visible);
+  const full = (orderedTasksByAssignee().get(lane.name) || []).map((x) => x.rowNum);
+  let k = 0;
+  const merged = full.map((r) => (visibleSet.has(r) ? visible[k++] : r));
+  while (k < visible.length) merged.push(visible[k++]);
+  return merged;
+}
+
 /* Re-dates a chain after its anchor's End moved to `anchorNewEnd`.
 
    Each dependent is placed relative to its own predecessor's NEW end — matching
@@ -2985,7 +3156,7 @@ function findChainFormulaMismatches(lane) {
   lane.idxs.forEach((idx, i) => {
     const t = tasks[idx];
     if (!t.startIsFormula) return;
-    const m = (t.startFormulaRaw || "").match(new RegExp("WORKDAY\(\s*" + CONFIG.A1.END + "(\d+)", "i"));
+    const m = (t.startFormulaRaw || "").match(new RegExp("WORKDAY\\(\\s*" + CONFIG.A1.END + "(\\d+)", "i"));
     if (!m) return; // not our chain-formula pattern — leave it alone
     const referencedRow = parseInt(m[1], 10);
     if (i === 0) return; // no predecessor to compare against
@@ -3013,7 +3184,8 @@ async function saveField(t, field) {
       method: "PUT",
       body: JSON.stringify({ range, majorDimension: "ROWS", values: [[value]] }),
     });
-    if (field === "start") t.startIsFormula = false; else t.endIsFormula = false;
+    if (field === "start") { t.startIsFormula = false; t.startFormulaRaw = ""; }
+    else { t.endIsFormula = false; t.endFormulaRaw = ""; }
     clearSaveFailure();
     setStatus(`Saved row ${t.rowNum} ${field}: ${value} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
@@ -3047,14 +3219,29 @@ async function saveEstimate(t) {
 // know the Workload %, so we back-solve the new Estimate from the new span
 // and update it in memory + the sheet. Returns true if it changed anything.
 function recalcEstimateForResize(t) {
-  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+  const parsed = t.endIsFormula ? parseWorkdayFormula(t.endFormulaRaw) : null;
   if (!parsed) return false; // no known workload — nothing to back-solve from
-  const newWorkDays = dayOffset(t.end) - dayOffset(t.start) + 1;
-  const newEst = Math.round(((newWorkDays - parsed.offset) * parsed.workload / 100) * 10) / 10;
-  if (newEst === t.estNum) return false;
+  // WORKDAY(Start, N) lands N columns after Start, so the span to hit is
+  // End − Start (NOT the inclusive day count, which overshot by one day).
+  const newEst = estimateForSpan(dayOffset(t.end) - dayOffset(t.start), parsed.workload, parsed.offset);
+  if (newEst === null || newEst === t.estNum) return false;
   t.est = String(newEst);
   t.estNum = newEst;
   return true;
+}
+
+// Smallest estimate (0.1 steps) whose End formula reaches exactly `span`
+// columns. Sheets evaluates WORKDAY(Start, Est*100/W + offset) and truncates
+// the day count, in the same floating point as here — e.g. at W=30 an
+// estimate of 5.1 gives 16.999…, i.e. 16 days, so the step-up loop matters.
+function estimateForSpan(span, workload, offset) {
+  if (!(workload > 0)) return null;
+  const r1 = (x) => Math.round(x * 10) / 10;
+  const reach = (e) => Math.trunc(e * 100 / workload + (offset || 0));
+  let est = Math.max(0, r1((span - (offset || 0)) * workload / 100));
+  for (let i = 0; i < 100 && reach(est) < span; i++) est = r1(est + 0.1);
+  for (let i = 0; i < 100 && est >= 0.1 && reach(r1(est - 0.1)) >= span; i++) est = r1(est - 0.1);
+  return est;
 }
 
 // Writes whichever of Start/End actually changed, skipping any field that's
@@ -3117,7 +3304,8 @@ async function applyFrdSpecFormulas() {
   for (const list of byAssignee.values()) {
     list.forEach((t, i) => {
       if (!FRD_SPEC_ACTIVITIES.has(activityKey(t.activity).toLowerCase())) return;
-      const prev = i > 0 ? list[i - 1] : null;
+      let prev = i > 0 ? list[i - 1] : null;
+      if (prev && startFormulaDescendants(t).has(prev)) prev = null; // would be circular — End formula only
       const startFormula = prev ? buildStartChainFormula(prev.rowNum) : null;
       const endFormula = buildEndFormula(t.rowNum, FRD_SPEC_WORKLOAD);
       jobs.push({ t, prev, startFormula, endFormula });
@@ -3150,8 +3338,8 @@ async function applyFrdSpecFormulas() {
       await writeFormula(t, "end", endFormula);
       t.end = excelWorkday(t.start, (t.estNum || 0) * 100 / FRD_SPEC_WORKLOAD);
     }
-    buildLanes();
-    render();
+    // Tasks chained behind these (by formula) moved in the sheet too.
+    await loadData();
     setStatus(`Applied formulas to ${jobs.length} task(s) · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
@@ -3159,7 +3347,7 @@ async function applyFrdSpecFormulas() {
   }
 }
 
-document.getElementById("btn-apply-frd-spec").addEventListener("click", applyFrdSpecFormulas);
+document.getElementById("btn-apply-frd-spec").addEventListener("click", () => exclusive(applyFrdSpecFormulas));
 
 // Resets every lane's row order back to chronological (Start date) order —
 // clears the manual drag-order override that had drifted out of sync with
@@ -3204,7 +3392,7 @@ document.querySelectorAll("#task-modal .tm-tab-btn").forEach((btn) => {
 
 function openTaskModal(t) {
   modalTask = t;
-  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+  const parsed = t.endIsFormula ? parseWorkdayFormula(t.endFormulaRaw) : null;
   setTaskModalTab("details"); // always open on Details — that's where most edits happen
 
   document.getElementById("tm-title").textContent = t.label;
@@ -3219,9 +3407,19 @@ function openTaskModal(t) {
   // could be saved.
   document.getElementById("tm-name").value = t.taskName || t.label || "";
   document.getElementById("tm-feature").value = t.feature || "";
-  fillSelect(document.getElementById("tm-activity-select"), allActivityOptions, activityKey(t.activity));
-  fillSelect(document.getElementById("tm-assignee-select"), allAssigneeOptions, t.assignee);
-  fillSelect(document.getElementById("tm-status-select"), allStatusOptions, (t.status || "").trim(), !!CONFIG.STATUS_OPTIONS);
+  // The task's CURRENT values always stay selectable — including a blank or
+  // an off-list Status like "Not Started" — so opening and saving the dialog
+  // can never quietly rewrite a field nobody touched.
+  fillSelectKeepCurrent(document.getElementById("tm-activity-select"), allActivityOptions, activityKey(t.activity));
+  fillSelectKeepCurrent(document.getElementById("tm-assignee-select"), allAssigneeOptions, t.assignee);
+  fillSelectKeepCurrent(document.getElementById("tm-status-select"), allStatusOptions, (t.status || "").trim());
+  modalInitial = {
+    name: document.getElementById("tm-name").value.trim(),
+    feature: document.getElementById("tm-feature").value.trim(),
+    activity: document.getElementById("tm-activity-select").value,
+    assignee: document.getElementById("tm-assignee-select").value,
+    status: document.getElementById("tm-status-select").value,
+  };
   document.getElementById("tm-details-warn").style.display = "none";
 
   // Jira link — clickable, opens in a new tab. Hidden if the row has no Jira.
@@ -3306,6 +3504,15 @@ function openTaskModal(t) {
   document.getElementById("task-modal-backdrop").classList.add("open");
 }
 
+let modalInitial = null; // the detail fields exactly as the dialog opened
+
+function fillSelectKeepCurrent(el, options, current) {
+  const opts = options.slice();
+  if (!opts.includes(current)) opts.unshift(current);
+  el.innerHTML = opts.map((o) => `<option value="${escapeHtml(o)}">${o === "" ? "—" : escapeHtml(o)}</option>`).join("");
+  el.value = current;
+}
+
 function closeTaskModal() {
   document.getElementById("task-modal-backdrop").classList.remove("open");
   modalTask = null;
@@ -3332,39 +3539,49 @@ document.getElementById("tm-save-details").addEventListener("click", async () =>
   const assignee = document.getElementById("tm-assignee-select").value;
   const status = document.getElementById("tm-status-select").value;
 
-  if (!name) { warn.style.display = "block"; warn.textContent = "Task name can't be blank."; return; }
-  if (!assignee) { warn.style.display = "block"; warn.textContent = "Choose an assignee."; return; }
+  const init = modalInitial || {};
+  // Compare against what the dialog OPENED with, not the raw cells: the name
+  // field is prefilled from the bar label when the Task cell is blank, and
+  // that fallback must not be written back as if it had been typed.
+  const diff = {
+    name: name !== init.name, feature: feature !== init.feature, activity: activity !== init.activity,
+    assignee: assignee !== init.assignee, status: status !== init.status,
+  };
+  if (diff.name && !name) { warn.style.display = "block"; warn.textContent = "Task name can't be blank."; return; }
+  if (diff.assignee && !assignee) { warn.style.display = "block"; warn.textContent = "Choose an assignee."; return; }
 
   const prevActivityKey = activityKey(t.activity);
   const prevFeatureKey = featureKey(t.feature);
-  const changed = name !== (t.taskName || "") || feature !== (t.feature || "") ||
-    activity !== prevActivityKey || assignee !== t.assignee || status !== (t.status || "").trim();
-  if (!changed) { warn.style.display = "block"; warn.textContent = "No changes to save."; return; }
+  if (!Object.values(diff).some(Boolean)) { warn.style.display = "block"; warn.textContent = "No changes to save."; return; }
 
   warn.style.display = "none";
   saveBtn.disabled = true;
   saveBtn.textContent = "Saving…";
 
   commitUndoPoint(snapshotState());
+  const before = { taskName: t.taskName, feature: t.feature, activity: t.activity, assignee: t.assignee, status: t.status, label: t.label, color: t.color };
   const prevAssignee = t.assignee;
-  t.taskName = name;
-  t.feature = feature;
-  t.activity = activity;
-  t.assignee = assignee;
-  t.status = status;
+  // "Uncategorized" is only the filter's name for a blank Activity cell.
+  const activityCell = activity === "Uncategorized" ? "" : activity;
+  if (diff.name) t.taskName = name;
+  if (diff.feature) t.feature = feature;
+  if (diff.activity) t.activity = activityCell;
+  if (diff.assignee) t.assignee = assignee;
+  if (diff.status) t.status = status;
   t.label = taskDisplayLabel(t.feature, t.taskName, t.activity);
   t.color = colorForActivity(t.activity);
 
   setStatus(`Saving row ${t.rowNum} (details)…`, false, true);
   try {
     const A = CONFIG.A1;
+    const cell = (col, v) => ({ range: `'${CONFIG.SHEET_NAME}'!${col}${t.rowNum}`, values: [[v]] });
     await writeCells([
-      { range: `'${CONFIG.SHEET_NAME}'!${A.TASKS}${t.rowNum}`, values: [[name]] },
-      { range: `'${CONFIG.SHEET_NAME}'!${A.FEATURE}${t.rowNum}`, values: [[feature]] },
-      { range: `'${CONFIG.SHEET_NAME}'!${A.ACTIVITY}${t.rowNum}`, values: [[activity]] },
-      { range: `'${CONFIG.SHEET_NAME}'!${A.ASSIGNEE}${t.rowNum}`, values: [[assignee]] },
-      { range: `'${CONFIG.SHEET_NAME}'!${A.STATUS}${t.rowNum}`, values: [[status]] },
-    ]);
+      diff.name && cell(A.TASKS, name),
+      diff.feature && cell(A.FEATURE, feature),
+      diff.activity && cell(A.ACTIVITY, activityCell),
+      diff.assignee && cell(A.ASSIGNEE, assignee),
+      diff.status && cell(A.STATUS, status),
+    ].filter(Boolean));
 
     // Assignee/Activity are closed dropdowns, so the chosen value always
     // exists — but it might not be in the CURRENT filter selection, in which
@@ -3390,6 +3607,8 @@ document.getElementById("tm-save-details").addEventListener("click", async () =>
     closeTaskModal();
   } catch (err) {
     console.error(err);
+    Object.assign(t, before); // nothing landed — don't show values the sheet doesn't have
+    undoStack.pop(); updateUndoRedoButtons();
     setStatus("Save failed — reload to resync: " + err.message, true);
     warn.style.display = "block";
     warn.textContent = "Save failed — reload to resync: " + err.message;
@@ -3405,13 +3624,18 @@ document.getElementById("tm-recalc").addEventListener("click", () => {
   const est = parseFloat(document.getElementById("tm-est").value);
   const workload = parseFloat(document.getElementById("tm-workload").value);
   const preview = document.getElementById("tm-preview");
-  if (isNaN(est) || isNaN(workload) || workload <= 0) {
+  if (isNaN(est) || est < 0 || isNaN(workload) || workload <= 0) {
     preview.style.display = "block";
-    preview.innerHTML = `Enter a valid estimate and a workload > 0%.`;
+    preview.innerHTML = `Enter a valid estimate (0 or more) and a workload > 0%.`;
     document.getElementById("tm-apply").style.display = "none";
     return;
   }
-  const workDaysNeeded = est * 100 / workload;
+  // Same arithmetic the End cell will use. With the workload unchanged the
+  // existing formula is kept, including any day offset (Database rows use
+  // e.g. =WORKDAY(G5,F5*2-1,…)); a new workload writes a formula without one.
+  const parsedEnd = t.endIsFormula ? parseWorkdayFormula(t.endFormulaRaw) : null;
+  const offset = parsedEnd && workload === parsedEnd.workload ? parsedEnd.offset : 0;
+  const workDaysNeeded = est * 100 / workload + offset;
   const newEnd = excelWorkday(t.start, workDaysNeeded);
   preview.style.display = "block";
   preview.innerHTML = `${Math.trunc(workDaysNeeded)} elapsed workday(s) at ${workload}% workload → new End: <b>${fmtDate(newEnd)}</b> (was ${fmtDate(t.end)})`;
@@ -3421,6 +3645,13 @@ document.getElementById("tm-recalc").addEventListener("click", () => {
   document.getElementById("tm-apply").dataset.newWorkload = workload;
 });
 
+// Apply carries the numbers from the last Recalculate. Editing either field
+// afterwards hides it, so a stale preview can never be applied.
+["tm-est", "tm-workload"].forEach((id) => document.getElementById(id).addEventListener("input", () => {
+  document.getElementById("tm-apply").style.display = "none";
+  document.getElementById("tm-preview").style.display = "none";
+}));
+
 document.getElementById("tm-apply").addEventListener("click", async () => {
   if (!modalTask) return;
   const t = modalTask;
@@ -3428,7 +3659,7 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
   const newEnd = new Date(parseInt(applyBtn.dataset.newEnd, 10));
   const newEst = parseFloat(applyBtn.dataset.newEst);
   const newWorkload = parseFloat(applyBtn.dataset.newWorkload);
-  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+  const parsed = t.endIsFormula ? parseWorkdayFormula(t.endFormulaRaw) : null;
 
   commitUndoPoint(snapshotState());
   const origEnd = new Date(t.end);
@@ -3488,8 +3719,11 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
           // task-detail modal is still open; wait for a committed frame
           // first so the underlying page isn't left stuck mid-transition.
           await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const many = chain.length > 1;
           const ok = window.confirm(
-            `"${blockFullName(t)}" moved ${Math.abs(shiftCols)} workday(s) ${verb}. It has ${chain.length} downstream task${chain.length > 1 ? "s" : ""} chained to start right after it ends.\n\nShift ${chain.length > 1 ? "them" : "it"} by the same amount (waterfall) to keep the dependency intact?`
+            `"${blockFullName(t)}" moved ${Math.abs(shiftCols)} workday(s) ${verb}. It has ${chain.length} downstream task${many ? "s" : ""} chained to start right after it ends.\n\n` +
+            `OK = shift ${many ? "them" : "it"} by the same amount (waterfall)\n` +
+            `Cancel = leave ${many ? "them" : "it"} where ${many ? "they are" : "it is"} (a Start that follows this task by formula becomes a fixed date)`
           );
           if (ok) {
             // Only write cells that aren't formula-driven — a formula Start
@@ -3498,6 +3732,8 @@ document.getElementById("tm-apply").addEventListener("click", async () => {
             for (const { t: dep, origStart: dS, origEnd: dE } of applyChainShift(chain, t.end)) {
               await saveChangedFields(dep, dS, dE);
             }
+          } else {
+            await pinFormulaDependents(t);
           }
         }
       }
@@ -3530,18 +3766,30 @@ document.getElementById("tm-chain-start").addEventListener("click", async () => 
     return;
   }
   const prev = list[pos - 1];
+  if (startFormulaDescendants(t).has(prev)) {
+    preview.innerHTML = `Can't chain to "${escapeHtml(blockFullName(prev))}" — its Start already follows this task, so chaining back would create a circular reference.`;
+    return;
+  }
   const newStart = excelWorkday(prev.end, 1);
   const formula = buildStartChainFormula(prev.rowNum);
 
   commitUndoPoint(snapshotState());
   const origStart = new Date(t.start), origEnd = new Date(t.end);
+  const spanCols = dayOffset(t.end) - dayOffset(t.start);
+  document.getElementById("tm-apply").style.display = "none"; // its preview was computed from the old Start
   setStatus(`Saving row ${t.rowNum} (Start formula)…`, false, true);
   try {
     await writeFormula(t, "start", formula);
     t.start = newStart;
     // If End is a standard WORKDAY formula, it recomputes off the new Start.
-    const parsedEnd = parseWorkdayFormula(t.endFormulaRaw);
+    // A plain-date End keeps the task's length (same as the drag path), so the
+    // Start can never land after the End.
+    const parsedEnd = t.endIsFormula ? parseWorkdayFormula(t.endFormulaRaw) : null;
     if (parsedEnd) t.end = excelWorkday(t.start, workdaySpanFor(t.estNum, parsedEnd.workload, parsedEnd.offset));
+    else if (!t.endIsFormula) {
+      t.end = new Date(workdayList[Math.max(0, Math.min(workdayList.length - 1, dayOffset(t.start) + spanCols))]);
+      await saveField(t, "end");
+    }
     preview.innerHTML = `Start chained to "${escapeHtml(prev.label)}" (row ${prev.rowNum}) → new Start: <b>${fmtDate(t.start)}</b>`;
     document.getElementById("tm-start-formula").textContent = t.startFormulaRaw;
     document.getElementById("tm-start").textContent = fmtDate(t.start);
@@ -3549,6 +3797,9 @@ document.getElementById("tm-chain-start").addEventListener("click", async () => 
     setStatus(`Saved row ${t.rowNum}: Start → ${fmtDate(t.start)} · ${new Date().toLocaleTimeString()}`);
     buildLanes();
     render();
+    // An End formula the app can't evaluate (e.g. =H60) moved in the sheet
+    // only — reload so the bar shows where it really is.
+    if (t.endIsFormula && !parsedEnd) loadData();
   } catch (err) {
     console.error(err);
     setStatus("Save failed — reload to resync: " + err.message, true);
@@ -3656,14 +3907,29 @@ const CMP_ROLE_RE = /^(dev|qa|msp)\b|^milestones?$/i;
 
 // "11/6" (no year) is common in the actual-date columns: borrow the year of
 // a reference date, rolling into the next year if the month went backwards.
-function cmpParseDate(str, ref) {
+function cmpParseDate(v, ref) {
+  if (typeof v === "number") {
+    if (v < 20000 || v > 80000) return null; // not a plausible date serial
+    const d = new Date(1899, 11, 30);
+    d.setDate(d.getDate() + Math.floor(v));
+    return d.getFullYear() >= 2015 ? d : null;
+  }
+  const str = v === null || v === undefined ? "" : String(v).trim();
   const d = parseDate(str);
-  if (d || !ref) return d;
-  const m = (str || "").trim().match(/^(\d{1,2})[\/\-](\d{1,2})$/);
+  if (d) return d.getFullYear() >= 2015 ? d : null;
+  if (!ref) return null;
+  const m = str.match(/^(\d{1,2})[\/\-](\d{1,2})$/);
   if (!m) return null;
-  let y = ref.getFullYear();
-  if (+m[1] - 1 < ref.getMonth()) y++;
-  return new Date(y, +m[1] - 1, +m[2]);
+  // Typed without a year: take whichever of last/this/next year lands closest
+  // to the reference date. (Always rolling an earlier month into NEXT year put
+  // a task that started a few days early a whole year late.)
+  let best = null;
+  for (const y of [ref.getFullYear() - 1, ref.getFullYear(), ref.getFullYear() + 1]) {
+    const c = new Date(y, +m[1] - 1, +m[2]);
+    if (c.getMonth() !== +m[1] - 1) continue;
+    if (!best || Math.abs(c - ref) < Math.abs(best - ref)) best = c;
+  }
+  return best;
 }
 
 function parseCompareRows(values) {
@@ -3690,8 +3956,9 @@ function parseCompareRows(values) {
     const owner = get(row, "owner"), title = get(row, "title"), wbs = get(row, "wbs");
     if (wbs && title && (!owner || CMP_ROLE_RE.test(owner))) { item = title; return; }
     if (!owner || CMP_ROLE_RE.test(owner)) return;
-    const planStart = cmpParseDate(get(row, "planStart")), planEnd = cmpParseDate(get(row, "planEnd"), planStart);
-    const actStart = cmpParseDate(get(row, "actStart"), planStart), actEnd = cmpParseDate(get(row, "actEnd"), actStart || planStart);
+    const raw = (k) => (col[k] < 0 ? "" : row[col[k]]);
+    const planStart = cmpParseDate(raw("planStart")), planEnd = cmpParseDate(raw("planEnd"), planStart);
+    const actStart = cmpParseDate(raw("actStart"), planStart), actEnd = cmpParseDate(raw("actEnd"), actStart || planStart);
     if (!planStart && !actStart) return;
     const jira = get(row, "jira");
     tasks.push({
@@ -3715,6 +3982,7 @@ async function loadCompare() {
   const seq = ++cmpLoadSeq;
   const fid = compareFeatureId, f = COMPARE_FEATURES[fid];
   const grid = document.getElementById("cmp-grid");
+  grid._tasks = null; // a zoom/filter change during the load must not redraw the previous feature
   grid.innerHTML = `<div id="cmp-empty">Loading ${escapeHtml(f.LABEL)}…</div>`;
   setStatus(`Loading ${f.LABEL} development plan…`, false, true);
   try {
@@ -3725,6 +3993,10 @@ async function loadCompare() {
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         majorDimension: "ROWS",
+        // Real date cells come back as serial numbers — their year is exact
+        // whatever the display format ("11/6"); only typed text needs guessing.
+        valueRenderOption: "UNFORMATTED_VALUE",
+        dateTimeRenderOption: "SERIAL_NUMBER",
         dataFilters: [{ gridRange: { sheetId: f.SHEET_ID, startRowIndex: 0, endRowIndex: 3000, startColumnIndex: 0, endColumnIndex: 26 } }],
       }),
     });
@@ -3965,7 +4237,7 @@ function closeContextMenu() {
 
 function attachBarContextMenu(bar, t, lane) {
   bar.addEventListener("contextmenu", (e) => {
-    if (readOnlyMode) return; // nothing here could be saved — leave the native menu
+    if (readOnlyMode || opBusy) return; // nothing here could be saved (or rows are moving) — leave the native menu
     e.preventDefault();
     ctxTask = t; ctxLane = lane;
     const menu = document.getElementById("bar-context-menu");
@@ -3980,7 +4252,8 @@ function attachBarContextMenu(bar, t, lane) {
 document.getElementById("bar-context-menu").addEventListener("click", (e) => {
   if (e.target.dataset && e.target.dataset.action === "delete" && ctxTask) {
     closeContextMenu();
-    deleteTaskFromMenu(ctxTask);
+    const target = ctxTask;
+    exclusive(() => deleteTaskFromMenu(target));
     return;
   }
   const where = e.target.dataset && e.target.dataset.where;
@@ -3997,14 +4270,10 @@ window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeContext
 // The clicked task's neighbours in lane (priority) order — what the new task
 // chains off, and what it pushes out.
 function laneNeighbours(t, lane) {
-  let order;
-  if (lane) {
-    order = lane.idxs.map((i) => tasks[i]);
-  } else {
-    // No lane (e.g. replaying a redo while the task is filtered out of view):
-    // fall back to the same per-assignee ordering buildLanes would have used.
-    order = orderedTasksByAssignee().get(t.assignee) || [t];
-  }
+  // Always the assignee's FULL order, never the filtered lane: with an
+  // activity or feature hidden, the visible neighbour isn't the real one, and
+  // the new task would be chained around a hidden task that then overlaps it.
+  const order = orderedTasksByAssignee().get(t.assignee) || [t];
   const pos = order.indexOf(t);
   return {
     prev: pos > 0 ? order[pos - 1] : null,
@@ -4046,7 +4315,7 @@ function openNewTaskModal(t, lane, where) {
   document.getElementById("nt-est").value = "";
   // Default workload: inherit the clicked task's, when its End formula says
   // what that is; otherwise 100%.
-  const parsed = parseWorkdayFormula(t.endFormulaRaw);
+  const parsed = t.endIsFormula ? parseWorkdayFormula(t.endFormulaRaw) : null;
   document.getElementById("nt-workload").value = parsed ? parsed.workload : 100;
 
   fillSelect(document.getElementById("nt-activity"), allActivityOptions, activityKey(t.activity));
@@ -4170,13 +4439,14 @@ function remapManualOrderForInsert(insertRow, newRow, assignee, afterRowNum) {
   saveManualOrder();
 }
 
-async function insertSheetRow(insertRow) {
+// inheritFromBefore: copy formatting from the row above (default) or below.
+// "Add task above" copies from below — the clicked task — rather than from
+// whatever sits above it, which may be a group/summary row.
+async function insertSheetRow(insertRow, inheritFromBefore = insertRow > 2) {
   await rowDimensionUpdate((sheetId) => ({
     insertDimension: {
       range: { sheetId, dimension: "ROWS", startIndex: insertRow - 1, endIndex: insertRow },
-      // Copy the previous row's formatting — except right under row 1,
-      // where "previous row" is the header and would drag its styling in.
-      inheritFromBefore: insertRow > 2,
+      inheritFromBefore: inheritFromBefore && insertRow > 2, // never the header's styling
     },
   }));
 }
@@ -4185,6 +4455,34 @@ async function deleteSheetRow(rowNum) {
   await rowDimensionUpdate((sheetId) => ({
     deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: rowNum - 1, endIndex: rowNum } },
   }));
+}
+
+/* A rollup like =MIN(G7:G78) only grows when a row is inserted strictly
+   INSIDE its range. A task added just below a block's last row, or just above
+   its first, lands outside the Feature's summary — so ranges that end on the
+   row right above the new one ("below"), or start on the row right below it
+   ("above"), are widened to include it. Undoing the insert deletes the row,
+   and Sheets shrinks the widened range back on its own. */
+async function widenAdjacentRanges(newRow, where) {
+  const fx = await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'`)}?valueRenderOption=FORMULA`);
+  const writes = [];
+  (fx.values || []).forEach((r, i) => r.forEach((v, c) => {
+    if (typeof v !== "string" || !v.startsWith("=") || i + 1 === newRow) return;
+    let changed = false;
+    const out = v.replace(new RegExp(DEL_REF_RE.source, "g"), (all, pre, a1, col, a2, r1, b1, col2, b2, r2) => {
+      if (r2 === undefined || r2 === "" || !delRefIsThisSheet(pre)) return all;
+      let lo = +r1, hi = +r2;
+      if (lo > hi) return all;
+      if (where !== "above" && hi === newRow - 1) hi = newRow;
+      else if (where === "above" && lo === newRow + 1) lo = newRow;
+      else return all;
+      changed = true;
+      return `${pre ? pre + "!" : ""}${a1}${col}${a2}${lo}:${b1}${col2}${b2}${hi}`;
+    });
+    if (changed) writes.push({ range: `'${CONFIG.SHEET_NAME}'!${colIndexToLetter(c)}${i + 1}`, values: [[out]] });
+  }));
+  if (writes.length) await writeCells(writes);
+  return writes.length;
 }
 
 async function writeCells(data) {
@@ -4222,7 +4520,7 @@ async function performTaskInsert(clicked, where, form) {
 
   const insertRow = where === "above" ? clicked.rowNum : clicked.rowNum + 1;
   setStatus("Inserting row…", false, true);
-  await insertSheetRow(insertRow);
+  await insertSheetRow(insertRow, where !== "above");
 
   const newRow = insertRow;
   const shift = (r) => (r >= insertRow ? r + 1 : r);
@@ -4244,7 +4542,18 @@ async function performTaskInsert(clicked, where, form) {
   if (plan.shifted) put(A.START, shift(plan.shifted.rowNum), buildStartChainFormula(newRow));
 
   setStatus("Writing new task…", false, true);
-  await writeCells(data);
+  try {
+    await writeCells(data);
+  } catch (err) {
+    // Never leave a blank row behind — every row below it would be one off
+    // from what the screen and the undo history believe.
+    try { await deleteSheetRow(insertRow); }
+    catch (e2) { err.message += " — AND removing the blank row failed: " + e2.message; }
+    throw err;
+  }
+  // Keep the new task inside its block's rollup row (=MIN(G7:G78) …).
+  try { await widenAdjacentRanges(newRow, where); }
+  catch (err) { console.warn("Widening rollup ranges failed:", err); }
 
   remapManualOrderForInsert(
     insertRow, newRow, plan.assignee,
@@ -4280,12 +4589,10 @@ async function undoRowInsert(entry) {
     }
     manualOrder = JSON.parse(JSON.stringify(entry.manualOrderBefore));
     saveManualOrder();
-    remapHistory(entry.insertRow, -1, entry);
     await loadData();
     setStatus(`Removed "${entry.label}" · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
-    console.error(err);
-    setStatus("Undo of the added task failed — reload to resync: " + err.message, true);
+    await historyFailed("Undo of the added task failed", err);
   }
 }
 
@@ -4298,16 +4605,14 @@ async function redoRowInsert(entry) {
     const fresh = await performTaskInsert(clicked, entry.where, entry.form);
     // Replay can only land on the same row, but keep the entry authoritative.
     Object.assign(entry, fresh);
-    remapHistory(entry.insertRow, +1, entry);
     await loadData();
     setStatus(`Re-added "${entry.label}" at row ${entry.insertRow} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
-    console.error(err);
-    setStatus("Redo of the added task failed — reload to resync: " + err.message, true);
+    await historyFailed("Redo of the added task failed", err);
   }
 }
 
-document.getElementById("nt-create").addEventListener("click", async () => {
+document.getElementById("nt-create").addEventListener("click", () => exclusive(async () => {
   const form = readNewTaskForm();
   const plan = planTaskInsert(ctxTask, ctxLane, ntWhere, form);
   if (plan.error) { updateNewTaskPreview(); return; }
@@ -4322,9 +4627,6 @@ document.getElementById("nt-create").addEventListener("click", async () => {
     const entry = await performTaskInsert(clicked, where, form);
 
     // The insert goes onto the undo stack as a reversible step of its own.
-    // Existing entries were recorded against pre-insert row numbers, so shift
-    // them up to keep an older drag undoable after this.
-    remapHistory(entry.insertRow, +1, entry);
     undoStack.push(entry);
     if (undoStack.length > MAX_HISTORY) undoStack.shift();
     redoStack = [];
@@ -4341,10 +4643,11 @@ document.getElementById("nt-create").addEventListener("click", async () => {
     createBtn.textContent = "Create task";
     const warn = document.getElementById("nt-warn");
     warn.style.display = "block";
-    warn.textContent = "Create failed — reload from the sheet to check what landed: " + err.message;
+    warn.textContent = "Create failed — nothing was added: " + err.message;
     setStatus("Create failed: " + err.message, true);
+    await loadData(); // resync in case the sheet changed part-way
   }
-});
+}));
 
 /* ============================================================
    Right-click → Delete task.
@@ -4378,7 +4681,8 @@ function findChainPredecessor(t, lane) {
 }
 
 // Cell references in a formula: optional sheet prefix, a cell, optional ":cell".
-const DEL_REF_RE = /(?:('[^']*'|[A-Za-z_][A-Za-z0-9_.]*)!)?(\$?)([A-Z]{1,3})(\$?)(\d+)(?::(\$?)([A-Z]{1,3})(\$?)(\d+))?(?![\w(])/g;
+// The range end may have no row (G2:G — open-ended); that group is then "".
+const DEL_REF_RE = /(?:('[^']*'|[A-Za-z_][A-Za-z0-9_.]*)!)?(\$?)([A-Z]{1,3})(\$?)(\d+)(?::(\$?)([A-Z]{1,3})(\$?)(\d*))?(?![\w(])/g;
 function delRefIsThisSheet(prefix) {
   if (!prefix) return true;
   return prefix.replace(/^'|'$/g, "").replace(/''/g, "'") === CONFIG.SHEET_NAME;
@@ -4394,13 +4698,27 @@ function delRefKind(formula, row) {
   let m;
   while ((m = DEL_REF_RE.exec(formula))) {
     if (!delRefIsThisSheet(m[1])) continue;
-    const r1 = +m[5], r2 = m[9] ? +m[9] : null;
+    const r1 = +m[5], r2 = m[9] === undefined ? null : (m[9] === "" ? Infinity : +m[9]);
     if (r2 !== null) { if (r1 === row && r2 === row) return "other"; continue; }
     if (r1 !== row) continue;
     if (m[3] === CONFIG.A1.END) kind = "end"; else return "other";
   }
   return kind;
 }
+// A range with the doomed row at one END (=MIN(G7:G78) deleting row 78)
+// shrinks on delete, and re-inserting the row on undo does NOT grow it back —
+// so such cells are recorded for undo, though nothing needs writing first.
+function delRangeEdge(formula, row) {
+  const re = new RegExp(DEL_REF_RE.source, "g");
+  let m;
+  while ((m = re.exec(formula))) {
+    if (!delRefIsThisSheet(m[1]) || m[9] === undefined || m[9] === "") continue;
+    const r1 = +m[5], r2 = +m[9];
+    if (r1 !== r2 && (r1 === row || r2 === row)) return true;
+  }
+  return false;
+}
+
 function delRepointEnd(formula, row, newRow) {
   DEL_REF_RE.lastIndex = 0;
   return formula.replace(DEL_REF_RE, (all, pre, a1, col, a2, r, ...rest) => {
@@ -4414,14 +4732,22 @@ function delRepointEnd(formula, row, newRow) {
 async function planTaskDelete(t) {
   const lane = laneForTask(t);
   const pred = findChainPredecessor(t, lane);
-  const range = `'${CONFIG.SHEET_NAME}'!A1:${CONFIG.LAST_COL}3000`;
+  // The WHOLE tab — columns right of the last header can hold formulas too.
+  const range = `'${CONFIG.SHEET_NAME}'`;
   const [fx, shown] = await Promise.all([
     sheetsFetch(`/values/${encodeURIComponent(range)}?valueRenderOption=FORMULA&dateTimeRenderOption=FORMATTED_STRING`),
     sheetsFetch(`/values/${encodeURIComponent(range)}?valueRenderOption=FORMATTED_VALUE`),
   ]);
   const F = fx.values || [], V = shown.values || [];
   const row = t.rowNum;
+  // Is row N still THIS task? Another user (or a change still in flight) may
+  // have moved rows since the timeline was loaded — never delete blind.
+  const C = CONFIG.COL, rowNow = V[row - 1] || [];
+  if (String(rowNow[C.ASSIGNEE] ?? "").trim() !== t.assignee || String(rowNow[C.FEATURE] ?? "").trim() !== (t.feature || "").trim()) {
+    throw new Error(`Row ${row} no longer holds "${blockFullName(t)}" — the sheet changed since it was loaded. Reload and try again.`);
+  }
   const cells = []; // { row, col, formula, shown, kind }
+  const edgeCells = []; // ranges with the row at one end — restored on undo only
   F.forEach((r, i) => {
     const rowNum = i + 1;
     if (rowNum === row) return;
@@ -4429,6 +4755,7 @@ async function planTaskDelete(t) {
       if (typeof v !== "string" || !v.startsWith("=")) return;
       const kind = delRefKind(v, row);
       if (kind !== "none") cells.push({ row: rowNum, col: colIndexToLetter(c), formula: v, shown: (V[i] && V[i][c] != null) ? V[i][c] : "", kind });
+      else if (delRangeEdge(v, row)) edgeCells.push({ row: rowNum, col: colIndexToLetter(c), formula: v });
     });
   });
   // Same-lane task whose literal Start sits one workday after B — no formula
@@ -4440,13 +4767,13 @@ async function planTaskDelete(t) {
     ...cells.filter((c) => c.kind === "end" && c.col === CONFIG.A1.START).map((c) => c.row),
     ...(literalNext ? [literalNext.rowNum] : []),
   ])].map((r) => tasks.find((x) => x.rowNum === r)).filter(Boolean);
-  return { lane, pred, cells, literalNext, rowValues, dependents };
+  return { lane, pred, cells, edgeCells, literalNext, rowValues, dependents };
 }
 
 // Writes the delete to the sheet and returns its history entry.
 async function performTaskDelete(t, rechain, plan) {
   plan = plan || await planTaskDelete(t);
-  const { pred, cells, literalNext, rowValues } = plan;
+  const { pred, cells, edgeCells, literalNext, rowValues } = plan;
   const row = t.rowNum;
   const S = `'${CONFIG.SHEET_NAME}'!`;
   const manualOrderBefore = JSON.parse(JSON.stringify(manualOrder));
@@ -4464,6 +4791,7 @@ async function performTaskDelete(t, rechain, plan) {
     writes.push({ range: `${S}${CONFIG.A1.START}${literalNext.rowNum}`, values: [[buildStartChainFormula(pred.t.rowNum)]] });
     restores.push({ row: literalNext.rowNum, col: CONFIG.A1.START, value: fmtDate(literalNext.start) });
   }
+  (edgeCells || []).forEach((c) => restores.push({ row: c.row, col: c.col, value: c.formula }));
   setStatus(`Deleting "${blockFullName(t)}"…`, false, true);
   if (writes.length) await writeCells(writes);
 
@@ -4490,17 +4818,18 @@ async function undoRowDelete(entry) {
   try {
     await insertSheetRow(entry.rowNum);
     const S = `'${CONFIG.SHEET_NAME}'!`;
-    const data = [{ range: `${S}A${entry.rowNum}:${CONFIG.LAST_COL}${entry.rowNum}`, values: [entry.rowValues] }];
+    const data = [];
+    if (entry.rowValues && entry.rowValues.length) {
+      data.push({ range: `${S}A${entry.rowNum}:${colIndexToLetter(entry.rowValues.length - 1)}${entry.rowNum}`, values: [entry.rowValues] });
+    }
     (entry.restores || []).forEach((r) => data.push({ range: `${S}${r.col}${r.row}`, values: [[r.value]] }));
     await writeCells(data);
     manualOrder = JSON.parse(JSON.stringify(entry.manualOrderBefore));
     saveManualOrder();
-    remapHistory(entry.rowNum, +1, entry);
     await loadData();
     setStatus(`Restored "${entry.label}" at row ${entry.rowNum} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
-    console.error(err);
-    setStatus("Undo of the delete failed — reload to resync: " + err.message, true);
+    await historyFailed("Undo of the delete failed", err);
   }
 }
 
@@ -4510,12 +4839,10 @@ async function redoRowDelete(entry) {
     const t = tasks.find((x) => x.rowNum === entry.rowNum);
     if (!t) throw new Error(`row ${entry.rowNum} is no longer in the sheet`);
     Object.assign(entry, await performTaskDelete(t, entry.rechain));
-    remapHistory(entry.rowNum, -1, entry);
     await loadData();
     setStatus(`Deleted "${entry.label}" · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
-    console.error(err);
-    setStatus("Redo of the delete failed — reload to resync: " + err.message, true);
+    await historyFailed("Redo of the delete failed", err);
   }
 }
 
@@ -4551,7 +4878,6 @@ async function deleteTaskFromMenu(t) {
 
   try {
     const entry = await performTaskDelete(t, rechain, plan);
-    remapHistory(entry.rowNum, -1, entry);
     undoStack.push(entry);
     if (undoStack.length > MAX_HISTORY) undoStack.shift();
     redoStack = [];
@@ -4561,6 +4887,7 @@ async function deleteTaskFromMenu(t) {
   } catch (err) {
     console.error(err);
     reportSaveFailure("Delete", err);
+    await loadData(); // resync — the sheet may have changed part-way
   }
 }
 
