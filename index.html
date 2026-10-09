@@ -298,6 +298,12 @@
      PLAN (dashed border, white fill, carries the label) over ACTUAL (solid). */
   #view-mode, #compare-feature, #cmp-zoom{display:none;}
   body.compare-mode #cmp-zoom{display:inline-block;}
+  #cmp-assignee-filter{display:none;position:relative;}
+  body.compare-mode #cmp-assignee-filter{display:inline-block;}
+  #cmp-assignee-panel{display:none;position:absolute;left:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);width:220px;max-height:360px;overflow-y:auto;z-index:70;padding:8px;}
+  #cmp-assignee-panel.open{display:block;}
+  body.mobile-mode #cmp-assignee-filter, body.mobile-mode #btn-cmp-assignee{width:100%;}
+  body.mobile-mode #cmp-assignee-panel{position:static;width:100%;box-shadow:none;}
   body.compare-mode #timeline-wrap, body.compare-mode #legend,
   body.compare-mode #mobile-hscroll, body.compare-mode #mobile-vscroll,
   body.compare-mode #btn-undo, body.compare-mode #btn-redo,
@@ -390,6 +396,13 @@
       <option value="24" selected>Zoom: Week</option>
       <option value="42">Zoom: Day</option>
     </select>
+    <div id="cmp-assignee-filter">
+      <button id="btn-cmp-assignee">Assignees ▾</button>
+      <div id="cmp-assignee-panel">
+        <div class="assignee-actions"><button id="cmp-assignee-all">All</button><button id="cmp-assignee-none">None</button></div>
+        <div id="cmp-assignee-list"></div>
+      </div>
+    </div>
     <select id="cmp-zoom" title="Zoom">
       <option value="4">Zoom: Quarter</option>
       <option value="10">Zoom: Month</option>
@@ -555,7 +568,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-i";
+const BUILD_ID = "2026-10-09-j";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -3490,6 +3503,10 @@ const CMP_ZOOM_KEY = "sheet_timeline_cmp_zoom_v1";
 let cmpPx = 22; // px per day — the Dev Comparison zoom
 try { cmpPx = [4, 10, 22, 42].includes(+localStorage.getItem(CMP_ZOOM_KEY)) ? +localStorage.getItem(CMP_ZOOM_KEY) : 22; } catch (_) {}
 let viewMode = "timeline";
+const CMP_HIDDEN_KEY = "sheet_timeline_cmp_hidden_v1";
+let cmpHidden = {}; // feature id -> [assignee names hidden]
+try { cmpHidden = JSON.parse(localStorage.getItem(CMP_HIDDEN_KEY) || "{}") || {}; } catch (_) {}
+function cmpSaveHidden() { try { localStorage.setItem(CMP_HIDDEN_KEY, JSON.stringify(cmpHidden)); } catch (_) {} }
 let compareFeatureId = Object.keys(COMPARE_FEATURES)[0];
 let compareLoaded = null; // feature id currently drawn
 
@@ -3621,7 +3638,9 @@ function renderCompare(tasks, keepDay) {
 
   // Lanes: one per assignee, ordered by first plan start; tasks by plan start.
   const lanes = new Map();
-  tasks.forEach(t => { if (!lanes.has(t.assignee)) lanes.set(t.assignee, []); lanes.get(t.assignee).push(t); });
+  const hidden = new Set(cmpHidden[compareFeatureId] || []);
+  cmpBuildAssigneeList(tasks, hidden);
+  tasks.forEach(t => { if (hidden.has(t.assignee)) return; if (!lanes.has(t.assignee)) lanes.set(t.assignee, []); lanes.get(t.assignee).push(t); });
   const key = t => (t.planStart || t.actStart).getTime();
   const laneList = [...lanes.entries()].map(([name, ts]) => [name, ts.sort((a, b) => key(a) - key(b))])
     .sort((a, b) => key(a[1][0]) - key(b[1][0]));
@@ -3699,6 +3718,24 @@ function cmpJumpToToday(instant) {
   wrap.scrollLeft = left;
 }
 
+// Assignee checklist for the Dev Comparison filter (all people in the feature).
+function cmpBuildAssigneeList(tasks, hidden) {
+  const counts = {};
+  tasks.forEach(t => { counts[t.assignee] = (counts[t.assignee] || 0) + 1; });
+  const names = Object.keys(counts).sort((a, b) => a.localeCompare(b));
+  document.getElementById("cmp-assignee-list").innerHTML = names.map((n, i) =>
+    `<div class="assignee-row"><input type="checkbox" id="cmp-as-${i}" data-name="${escapeHtml(n)}"${hidden.has(n) ? "" : " checked"}>` +
+    `<label for="cmp-as-${i}">${escapeHtml(n)} <small style="color:var(--muted)">${counts[n]}</small></label></div>`).join("");
+  const shown = names.length - names.filter(n => hidden.has(n)).length;
+  document.getElementById("btn-cmp-assignee").textContent = shown === names.length ? "Assignees ▾" : `Assignees (${shown}/${names.length}) ▾`;
+}
+function cmpApplyHidden(names) {
+  cmpHidden[compareFeatureId] = names;
+  cmpSaveHidden();
+  const grid = document.getElementById("cmp-grid"), wrap = document.getElementById("compare-wrap");
+  if (grid._tasks) renderCompare(grid._tasks, wrap.scrollLeft / cmpPx);
+}
+
 // Darker border tone of a pastel palette colour (for dashed plan / actual outline).
 function cmpShade(hex) {
   const n = parseInt(hex.slice(1), 16);
@@ -3758,6 +3795,16 @@ function applyViewMode() {
     try { localStorage.setItem(VIEW_STORAGE_KEY, viewMode); } catch (_) {}
     applyViewMode();
     if (viewMode === "timeline" && typeof render === "function" && tasks && tasks.length) render(); // re-lay out after being hidden
+  });
+  const asFilter = document.getElementById("cmp-assignee-filter"), asPanel = document.getElementById("cmp-assignee-panel");
+  document.getElementById("btn-cmp-assignee").addEventListener("click", (e) => { e.stopPropagation(); asPanel.classList.toggle("open"); });
+  document.addEventListener("click", (e) => { if (!asFilter.contains(e.target)) asPanel.classList.remove("open"); });
+  document.getElementById("cmp-assignee-list").addEventListener("change", () => {
+    cmpApplyHidden([...document.querySelectorAll("#cmp-assignee-list input")].filter(c => !c.checked).map(c => c.dataset.name));
+  });
+  document.getElementById("cmp-assignee-all").addEventListener("click", () => cmpApplyHidden([]));
+  document.getElementById("cmp-assignee-none").addEventListener("click", () => {
+    cmpApplyHidden([...document.querySelectorAll("#cmp-assignee-list input")].map(c => c.dataset.name));
   });
   const zoomSel = document.getElementById("cmp-zoom");
   zoomSel.value = String(cmpPx);
