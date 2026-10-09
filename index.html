@@ -296,7 +296,8 @@
      Same look as the Product Timeline: assignee lane labels on the left,
      month/day header, week lines, today line. Each task gets a stacked pair:
      PLAN (dashed border, white fill, carries the label) over ACTUAL (solid). */
-  #view-mode, #compare-feature{display:none;}
+  #view-mode, #compare-feature, #cmp-zoom{display:none;}
+  body.compare-mode #cmp-zoom{display:inline-block;}
   body.compare-mode #timeline-wrap, body.compare-mode #legend,
   body.compare-mode #mobile-hscroll, body.compare-mode #mobile-vscroll,
   body.compare-mode #btn-undo, body.compare-mode #btn-redo,
@@ -387,6 +388,12 @@
       <option value="4">Zoom: Quarter</option>
       <option value="10">Zoom: Month</option>
       <option value="24" selected>Zoom: Week</option>
+      <option value="42">Zoom: Day</option>
+    </select>
+    <select id="cmp-zoom" title="Zoom">
+      <option value="4">Zoom: Quarter</option>
+      <option value="10">Zoom: Month</option>
+      <option value="22" selected>Zoom: Week</option>
       <option value="42">Zoom: Day</option>
     </select>
     <div id="settings-menu" style="display:none;">
@@ -548,7 +555,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-h";
+const BUILD_ID = "2026-10-09-i";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -3479,7 +3486,9 @@ const COMPARE_FEATURES = {
 };
 const COMPARE_SOURCES = ["database"]; // product lines that offer the view picker
 const VIEW_STORAGE_KEY = "sheet_timeline_view_v1";
-const CMP_PX_PER_DAY = 22;
+const CMP_ZOOM_KEY = "sheet_timeline_cmp_zoom_v1";
+let cmpPx = 22; // px per day — the Dev Comparison zoom
+try { cmpPx = [4, 10, 22, 42].includes(+localStorage.getItem(CMP_ZOOM_KEY)) ? +localStorage.getItem(CMP_ZOOM_KEY) : 22; } catch (_) {}
 let viewMode = "timeline";
 let compareFeatureId = Object.keys(COMPARE_FEATURES)[0];
 let compareLoaded = null; // feature id currently drawn
@@ -3598,11 +3607,11 @@ async function loadCompare() {
   }
 }
 
-function renderCompare(tasks) {
+function renderCompare(tasks, keepDay) {
   const grid = document.getElementById("cmp-grid");
   grid._tasks = tasks;
   if (!tasks.length) { grid.innerHTML = `<div id="cmp-empty">No Dev &amp; QA tasks with dates found.</div>`; return; }
-  const LW = 118, PX = CMP_PX_PER_DAY, SLOT = 48, HEAD = 56;
+  const LW = 118, PX = cmpPx, SLOT = 48, HEAD = 56;
   const all = tasks.flatMap(t => [t.planStart, t.planEnd, t.actStart, t.actEnd]).filter(Boolean);
   const origin = new Date(Math.min(...all)); origin.setDate(origin.getDate() - 3);
   const last = new Date(Math.max(...all)); last.setDate(last.getDate() + 21);
@@ -3628,12 +3637,13 @@ function renderCompare(tasks) {
   let head = `<div class="corner"></div>`, back = "";
   for (let i = 0; i < days; i++) {
     const d = dayAt(i), we = d.getDay() === 0 || d.getDay() === 6, left = LW + i * PX;
-    head += `<div class="day-cell${we ? " we" : ""}${d.getDay() === 1 ? " week-start" : ""}" style="left:${left}px;width:${PX}px">${d.getDate()}</div>`;
+    if (PX >= 14) head += `<div class="day-cell${we ? " we" : ""}${d.getDay() === 1 ? " week-start" : ""}" style="left:${left}px;width:${PX}px">${d.getDate()}</div>`;
+    else if (PX >= 8 && d.getDay() === 1) head += `<div class="day-cell week-start" style="left:${left}px;width:${7 * PX}px">${d.getDate()}</div>`;
     if (i === 0 || d.getDate() === 1) {
       const span = Math.min(cmpDayIndex(new Date(d.getFullYear(), d.getMonth() + 1, 1), origin), days) - i;
       head += `<div class="month-cell" style="left:${left}px;width:${span * PX}px">${d.toLocaleString("en", { month: "short", year: "numeric" })}</div>`;
     }
-    if (we) back += `<div class="cmp-we" style="left:${left}px;width:${PX}px;top:${HEAD}px"></div>`;
+    if (we && PX >= 8) back += `<div class="cmp-we" style="left:${left}px;width:${PX}px;top:${HEAD}px"></div>`;
     if (d.getDay() === 1) back += `<div class="week-line" style="left:${left}px;top:${HEAD}px"></div>`;
   }
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -3677,14 +3687,15 @@ function renderCompare(tasks) {
   // the end, same as the Product Timeline.
   grid._todayX = today >= origin && today <= last ? x(today) : null;
   grid._originX = LW;
-  cmpJumpToToday(true);
+  if (keepDay != null) document.getElementById("compare-wrap").scrollLeft = Math.max(0, keepDay * PX);
+  else cmpJumpToToday(true);
 }
 
 // Scrolls the comparison so today sits a week in from the left edge
 // (or to the start, when today is outside the plan's range).
 function cmpJumpToToday(instant) {
   const grid = document.getElementById("cmp-grid"), wrap = document.getElementById("compare-wrap");
-  const left = grid._todayX == null ? 0 : Math.max(0, grid._todayX - (grid._originX || 0) - 7 * CMP_PX_PER_DAY);
+  const left = grid._todayX == null ? 0 : Math.max(0, grid._todayX - (grid._originX || 0) - 7 * cmpPx);
   wrap.scrollLeft = left;
 }
 
@@ -3747,6 +3758,15 @@ function applyViewMode() {
     try { localStorage.setItem(VIEW_STORAGE_KEY, viewMode); } catch (_) {}
     applyViewMode();
     if (viewMode === "timeline" && typeof render === "function" && tasks && tasks.length) render(); // re-lay out after being hidden
+  });
+  const zoomSel = document.getElementById("cmp-zoom");
+  zoomSel.value = String(cmpPx);
+  zoomSel.addEventListener("change", () => {
+    const wrap = document.getElementById("compare-wrap"), grid = document.getElementById("cmp-grid");
+    const day = wrap.scrollLeft / cmpPx; // leftmost visible day, kept across the zoom
+    cmpPx = +zoomSel.value;
+    try { localStorage.setItem(CMP_ZOOM_KEY, String(cmpPx)); } catch (_) {}
+    if (grid._tasks) renderCompare(grid._tasks, day);
   });
   featSel.addEventListener("change", () => { compareFeatureId = featSel.value; if (viewMode === "compare" && accessToken) loadCompare(); });
   applyViewMode();
