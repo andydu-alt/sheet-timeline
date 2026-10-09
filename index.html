@@ -573,7 +573,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-m";
+const BUILD_ID = "2026-10-09-n";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -691,16 +691,11 @@ function colIndexToLetter(index) {
 // only for fields explicitly marked positional. A HEADERS entry that isn't
 // found and has no override is a hard error — surfacing a moved/renamed
 // column immediately beats silently reading or writing the wrong one.
-async function resolveColumns() {
-  // The tab's numeric id (needed for inserting/deleting rows) is looked up by
-  // NAME on every load. Tabs in this workbook get re-created from backups,
-  // which gives them a new id under the same name — a hard-coded id then
-  // points at a deleted tab (or worse, at the renamed "… Old" copy).
-  const meta = await sheetsFetch("?fields=sheets.properties(sheetId,title)");
-  const tab = (meta.sheets || []).map((x) => x.properties).find((x) => x.title === CONFIG.SHEET_NAME);
-  if (!tab) throw new Error(`Tab "${CONFIG.SHEET_NAME}" not found in the spreadsheet — it may have been renamed.`);
-  CONFIG.SHEET_ID = tab.sheetId;
-  const headerRow = (await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!1:1`)}?majorDimension=ROWS`)).values?.[0] || [];
+// Takes row 1 as already fetched by loadData (header and data arrive in the
+// same request, so resolving costs no extra round trip) and re-resolves on
+// every load — a column moved mid-session is picked up on the next reload
+// instead of the app writing into the wrong column until a page refresh.
+function resolveColumns(headerRow) {
   const byHeader = new Map(); // normalized header text -> 0-based index
   headerRow.forEach((h, i) => {
     const key = (h || "").trim().toLowerCase();
@@ -737,6 +732,41 @@ async function resolveColumns() {
   CONFIG.COL = col;
   CONFIG.A1 = a1;
   CONFIG.LAST_COL = colIndexToLetter(Math.max(headerRow.length - 1, ...Object.values(col)));
+}
+
+function colLetterToIndex(letters) {
+  let n = 0;
+  for (const ch of String(letters || "A").toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+
+/* Numeric tab id — needed ONLY to insert or delete rows. Tabs in this
+   workbook get re-created from backups under the same name, which changes
+   the id, so it is looked up by NAME — in the background, never on the
+   load's critical path — and looked up again if a row insert/delete reports
+   the cached id as gone. (CONFIG.SHEET_ID from SOURCES only namespaces this
+   browser's saved settings; it is never sent to the API.) */
+let sheetIdPromise = null;
+function ensureSheetId(force) {
+  if (!sheetIdPromise || force) {
+    const p = sheetsFetch("?fields=sheets.properties(sheetId,title)").then((meta) => {
+      const tab = (meta.sheets || []).map((x) => x.properties).find((x) => x.title === CONFIG.SHEET_NAME);
+      if (!tab) throw new Error(`Tab "${CONFIG.SHEET_NAME}" not found in the spreadsheet — it may have been renamed.`);
+      return tab.sheetId;
+    });
+    p.catch(() => { if (sheetIdPromise === p) sheetIdPromise = null; }); // retry on next use
+    sheetIdPromise = p;
+  }
+  return sheetIdPromise;
+}
+async function rowDimensionUpdate(makeRequest) {
+  const send = (sheetId) => sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [makeRequest(sheetId)] }) });
+  try {
+    return await send(await ensureSheetId());
+  } catch (err) {
+    if (!/no grid with id/i.test((err && err.message) || "")) throw err;
+    return await send(await ensureSheetId(true)); // tab was re-created since the id was cached
+  }
 }
 
 const SOURCE_STORAGE_KEY = "sheet_timeline_source_v1";
@@ -850,6 +880,7 @@ function addWorkingDaysInclusive(start, workDayCount) {
   return d;
 }
 
+let holidaysLoaded = false; // once per page — a sheet with no holidays must not refetch every load
 async function loadHolidays() {
   try {
     const data = await sheetsFetch(`/values/${encodeURIComponent(CONFIG.HOLIDAYS_RANGE)}?majorDimension=ROWS`);
@@ -859,6 +890,7 @@ async function loadHolidays() {
       const d = parseDate(row[0]);
       if (d) holidaySet.add(dateKey(d));
     });
+    holidaysLoaded = true;
   } catch (err) {
     console.error("Holiday load failed (dragging will only respect weekends):", err);
   }
@@ -1200,23 +1232,20 @@ function initAuth() {
       if (resp.error) { setStatus("Sign-in failed: " + resp.error, true); return; }
       accessToken = resp.access_token;
       tokenExpiryMs = Date.now() + (parseInt(resp.expires_in || "3600", 10) * 1000);
-      localStorage.setItem(CONFIG.TOKEN_STORAGE_KEY, JSON.stringify({ token: accessToken, expiry: tokenExpiryMs }));
+      try { localStorage.setItem(CONFIG.TOKEN_STORAGE_KEY, JSON.stringify({ token: accessToken, expiry: tokenExpiryMs })); } catch (_) {}
       scheduleSilentRefresh();
+      // The hourly silent refresh lands here too. Once signed in, a new token
+      // is all it needs — re-running onSignedIn would reload the whole sheet
+      // (and used to jump the view back to Today) every hour. Only a load that
+      // had failed (e.g. on an expired token) is retried.
+      if (signedIn) { if (lastLoadFailed) loadData(); return; }
       onSignedIn();
     },
   });
 
-  // Try to reuse a cached token first.
-  try {
-    const cached = JSON.parse(localStorage.getItem(CONFIG.TOKEN_STORAGE_KEY) || "null");
-    if (cached && cached.token && cached.expiry > Date.now() + 60000) {
-      accessToken = cached.token;
-      tokenExpiryMs = cached.expiry;
-      scheduleSilentRefresh();
-      onSignedIn();
-      return;
-    }
-  } catch (e) { /* ignore malformed cache */ }
+  // Already signed in from the cached token at boot (see Boot) — the token
+  // client is only needed for later refreshes.
+  if (accessToken) return;
 
   // No valid cached token — try one silent attempt (works if the browser
   // still has an active Google session and consent was already granted).
@@ -1278,7 +1307,23 @@ document.getElementById("zoom").addEventListener("change", (e) => {
   render();
 });
 
+// Reuses a still-valid cached token. Called at boot, BEFORE the Google
+// sign-in script has loaded, so the data load starts immediately.
+function useCachedToken() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(CONFIG.TOKEN_STORAGE_KEY) || "null");
+    if (cached && cached.token && cached.expiry > Date.now() + 60000) {
+      accessToken = cached.token;
+      tokenExpiryMs = cached.expiry;
+      return true;
+    }
+  } catch (e) { /* ignore malformed cache / blocked storage */ }
+  return false;
+}
+
+let signedIn = false;
 async function onSignedIn() {
+  signedIn = true;
   document.getElementById("signin-screen").style.display = "none";
   document.getElementById("timeline-wrap").style.display = "block";
   document.getElementById("btn-signin").textContent = "Re-authenticate";
@@ -1305,14 +1350,14 @@ async function onSignedIn() {
     document.getElementById("btn-legend-toggle").textContent = "Show legend";
   }
 
-  // Check edit permission before the user can attempt any drag, so a
-  // Viewer/Commenter gets a clear read-only mode instead of a drag that
-  // silently fails to save.
-  const canWrite = await checkWritePermission();
-  setReadOnlyMode(!canWrite);
-
+  // Load immediately. The edit-permission probe (two writes to hidden
+  // metadata, ~2 s on this workbook) runs alongside instead of in front of the
+  // load; until it answers the app behaves as editable — the same thing it
+  // already does when the probe errors — and a Viewer/Commenter account flips
+  // to read-only a moment later.
   loadData();
   applyViewMode();
+  checkWritePermission().then((canWrite) => setReadOnlyMode(!canWrite));
 }
 
 document.getElementById("btn-legend-toggle").addEventListener("click", () => {
@@ -1613,24 +1658,49 @@ function colorForActivity(activity) {
   return activityColors.get(key);
 }
 
+/* Load speed: every Sheets API call on this (large) workbook costs about a
+   second, so the load is ONE round of parallel requests — values and formulas
+   (header row included), plus the holidays the first time. The tab-id lookup
+   and the edit-permission probe run alongside, off the critical path.
+   The fetch width comes from the previous load's layout (remembered per
+   source) plus a margin; if row 1 fills every fetched column, the sheet may
+   be wider, so the fetch is widened and repeated. */
+function lastColKey() { return `sheet_timeline_lastcol_v1::${sourceId}::${CONFIG.SPREADSHEET_ID}::${CONFIG.SHEET_NAME}`; }
+async function fetchSheetRows(lastColIndex) {
+  const range = `'${CONFIG.SHEET_NAME}'!A1:${colIndexToLetter(lastColIndex)}3000`;
+  // Formulas are fetched too, so formula-driven Start/End cells (e.g. "=H4+1"
+  // for a dependent Start) are never overwritten with a literal value.
+  const [data, formulaData] = await Promise.all([
+    sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS`),
+    sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS&valueRenderOption=FORMULA`),
+  ]);
+  const rows = data.values || [], formulaRows = formulaData.values || [];
+  return { header: rows[0] || [], rows: rows.slice(1), formulaRows: formulaRows.slice(1) };
+}
+
+let loadSeq = 0;          // a newer load supersedes an older one still in flight
+let firstLoadDone = false; // only the first load lands the view on Today
+let lastLoadFailed = false;
 async function loadData() {
+  const seq = ++loadSeq;
   setStatus("Loading sheet…");
   try {
-    if (holidaySet.size === 0) await loadHolidays();
-    // Resolved once per source per session (cheap to skip on the re-loads
-    // that follow an insert/undo — headers don't move mid-session; a real
-    // header rename picks up on the next full page load).
-    if (!CONFIG.COL) await resolveColumns();
-    const range = `'${CONFIG.SHEET_NAME}'!A2:${CONFIG.LAST_COL}3000`;
-    // Fetch formulas too (separately) so we know which Start/End cells are
-    // formula-driven (e.g. "=H4+1" for a dependent Start) and never
-    // overwrite those with a literal value — see saveField() below.
-    const [data, formulaData] = await Promise.all([
-      sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS`),
-      sheetsFetch(`/values/${encodeURIComponent(range)}?majorDimension=ROWS&valueRenderOption=FORMULA`),
-    ]);
-    const rows = data.values || [];
-    const formulaRows = formulaData.values || [];
+    if (!sheetIdPromise) ensureSheetId().catch(() => {});
+    const holidaysP = holidaysLoaded ? null : loadHolidays(); // never throws
+    let cached = null;
+    try { cached = localStorage.getItem(lastColKey()); } catch (_) {}
+    let width = colLetterToIndex(CONFIG.LAST_COL || (/^[A-Z]{1,3}$/.test(cached || "") ? cached : "Z")) + 6;
+    let got = await fetchSheetRows(width);
+    while (got.header.length > width && width < 700) { // row 1 fills the fetched width — there may be more
+      width += 26;
+      got = await fetchSheetRows(width);
+    }
+    if (holidaysP) await holidaysP;
+    if (seq !== loadSeq) return; // superseded — the newer load will render
+    resolveColumns(got.header);
+    try { localStorage.setItem(lastColKey(), CONFIG.LAST_COL); } catch (_) {}
+    const rows = got.rows;
+    const formulaRows = got.formulaRows;
     const C = CONFIG.COL;
     const MIN_SANE_YEAR = 2015; // dates before this are blank/formula cells rendered as the Sheets epoch (1899/1900)
     tasks = [];
@@ -1727,10 +1797,16 @@ async function loadData() {
     buildLegend();
     buildLanes();
     render();
-    requestAnimationFrame(() => landOnInitialView()); // land on Today, or the earliest task if today is off-range
+    // Land on Today (or the earliest task) only on the FIRST load. Reloads after
+    // an add/delete/undo or a "Reload from Sheet" keep the user's place.
+    if (!firstLoadDone) requestAnimationFrame(() => landOnInitialView());
+    firstLoadDone = true;
+    lastLoadFailed = false;
     setStatus(`Loaded ${tasks.length} tasks${skippedSentinel ? ` · ${skippedSentinel} skipped (blank date cells)` : ""}${skippedAggregate ? ` · ${skippedAggregate} group rows skipped` : ""}${skippedNoAssignee ? ` · ⚠ ${skippedNoAssignee} hidden (no Assignee)` : ""} · ${new Date().toLocaleTimeString()} · build ${BUILD_ID} · ${sourceId}/${CONFIG.BAR_DETAIL || "task"}`);
   } catch (err) {
     console.error(err);
+    if (seq !== loadSeq) return;
+    lastLoadFailed = true;
     setStatus("Load failed: " + err.message, true);
   }
 }
@@ -3634,28 +3710,37 @@ function cmpTaskName(t) {
   return t.item && title ? `${t.item} • ${title}` : (t.item || title || "Task");
 }
 
+let cmpLoadSeq = 0; // switching feature quickly: only the latest request may render
 async function loadCompare() {
-  const f = COMPARE_FEATURES[compareFeatureId];
+  const seq = ++cmpLoadSeq;
+  const fid = compareFeatureId, f = COMPARE_FEATURES[fid];
   const grid = document.getElementById("cmp-grid");
   grid.innerHTML = `<div id="cmp-empty">Loading ${escapeHtml(f.LABEL)}…</div>`;
   setStatus(`Loading ${f.LABEL} development plan…`, false, true);
   try {
-    const api = `https://sheets.googleapis.com/v4/spreadsheets/${f.SPREADSHEET_ID}`;
-    const get = async (p) => {
-      const r = await fetch(api + p, { headers: { Authorization: `Bearer ${accessToken}` } });
-      if (!r.ok) throw new Error(`Sheets API ${r.status}: ${await r.text()}`);
-      return r.json();
-    };
-    const meta = await get("?fields=sheets.properties(sheetId,title)");
-    const tab = (meta.sheets || []).map(s => s.properties).find(p => p.sheetId === f.SHEET_ID);
-    if (!tab) throw new Error(`Tab gid ${f.SHEET_ID} not found in the ${f.LABEL} workbook.`);
-    const data = await get(`/values/${encodeURIComponent(`'${tab.title}'!A1:O1000`)}?majorDimension=ROWS`);
-    const tasks = parseCompareRows(data.values || []);
+    // ONE request, addressed by the tab's gid (a data filter), instead of a
+    // metadata lookup for the tab name followed by a values read.
+    const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${f.SPREADSHEET_ID}/values:batchGetByDataFilter`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        majorDimension: "ROWS",
+        dataFilters: [{ gridRange: { sheetId: f.SHEET_ID, startRowIndex: 0, endRowIndex: 3000, startColumnIndex: 0, endColumnIndex: 26 } }],
+      }),
+    });
+    if (!r.ok) throw new Error(`Sheets API ${r.status}: ${await r.text()}`);
+    const data = await r.json();
+    if (seq !== cmpLoadSeq) return;
+    const vr = data.valueRanges && data.valueRanges[0] && data.valueRanges[0].valueRange;
+    if (!vr) throw new Error(`Tab gid ${f.SHEET_ID} not found in the ${f.LABEL} workbook.`);
+    const tasks = parseCompareRows(vr.values || []);
     renderCompare(tasks);
-    compareLoaded = compareFeatureId;
+    compareLoaded = fid;
     setStatus(`${f.LABEL}: ${tasks.length} tasks · plan vs actual · read-only · ${new Date().toLocaleTimeString()} · build ${BUILD_ID}`);
   } catch (err) {
+    if (seq !== cmpLoadSeq) return;
     console.error(err);
+    grid._tasks = null;
     grid.innerHTML = `<div id="cmp-empty">Couldn't load ${escapeHtml(f.LABEL)}: ${escapeHtml(err.message)}</div>`;
     setStatus("Comparison load failed: " + err.message, true);
   }
@@ -4086,32 +4171,20 @@ function remapManualOrderForInsert(insertRow, newRow, assignee, afterRowNum) {
 }
 
 async function insertSheetRow(insertRow) {
-  await sheetsFetch(":batchUpdate", {
-    method: "POST",
-    body: JSON.stringify({
-      requests: [{
-        insertDimension: {
-          range: { sheetId: CONFIG.SHEET_ID, dimension: "ROWS", startIndex: insertRow - 1, endIndex: insertRow },
-          // Copy the previous row's formatting — except right under row 1,
-          // where "previous row" is the header and would drag its styling in.
-          inheritFromBefore: insertRow > 2,
-        },
-      }],
-    }),
-  });
+  await rowDimensionUpdate((sheetId) => ({
+    insertDimension: {
+      range: { sheetId, dimension: "ROWS", startIndex: insertRow - 1, endIndex: insertRow },
+      // Copy the previous row's formatting — except right under row 1,
+      // where "previous row" is the header and would drag its styling in.
+      inheritFromBefore: insertRow > 2,
+    },
+  }));
 }
 
 async function deleteSheetRow(rowNum) {
-  await sheetsFetch(":batchUpdate", {
-    method: "POST",
-    body: JSON.stringify({
-      requests: [{
-        deleteDimension: {
-          range: { sheetId: CONFIG.SHEET_ID, dimension: "ROWS", startIndex: rowNum - 1, endIndex: rowNum },
-        },
-      }],
-    }),
-  });
+  await rowDimensionUpdate((sheetId) => ({
+    deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: rowNum - 1, endIndex: rowNum } },
+  }));
 }
 
 async function writeCells(data) {
@@ -4494,6 +4567,9 @@ async function deleteTaskFromMenu(t) {
 /* ============================================================
    Boot
    ============================================================ */
+// A valid cached token starts the data load now; the Google sign-in script
+// (loaded async) is only needed for refreshing the token or a first sign-in.
+if (useCachedToken()) { scheduleSilentRefresh(); onSignedIn(); }
 window.addEventListener("load", () => {
   const check = setInterval(() => {
     if (window.google && google.accounts && google.accounts.oauth2) {
@@ -4504,8 +4580,14 @@ window.addEventListener("load", () => {
 });
 
 // Keep the today-line creeping forward through the day instead of
-// only updating on the next full data reload.
-setInterval(() => { if (lanes.length) render(); }, 60000);
+// only updating on the next full data reload. Skipped while a bar is being
+// dragged (a rebuild would tear the dragged bar out from under the pointer),
+// while the tab is hidden, and while the Dev Comparison view is showing.
+setInterval(() => {
+  if (!lanes.length || document.hidden || document.body.classList.contains("compare-mode")) return;
+  if (document.querySelector(".bar.dragging")) return;
+  render();
+}, 60000);
 </script>
 </body>
 </html>
