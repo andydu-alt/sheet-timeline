@@ -147,6 +147,17 @@
   #task-modal .warn{margin-top:10px;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;padding:8px 10px;border-radius:6px;}
 
   /* --- Mobile view: bigger touch targets, roomier bars, vertical settings drawer --- */
+  /* Settings dropdown: legend toggle, FRD/Spec formulas, Align Waterfall, Re-authenticate. */
+  #settings-menu{position:relative;}
+  #settings-panel{display:none;position:absolute;left:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);z-index:70;padding:6px;min-width:230px;flex-direction:column;gap:2px;}
+  #settings-panel.open{display:flex;}
+  #settings-panel button{width:100%;text-align:left;border:none;background:none;padding:8px 10px;}
+  #settings-panel button:hover{background:#f0f2f5;}
+  /* Mobile: the ☰ drawer is already the settings surface — list the items inline. */
+  body.mobile-mode #btn-settings{display:none;}
+  body.mobile-mode #settings-menu{width:100%;}
+  body.mobile-mode #settings-panel{display:flex;position:static;box-shadow:none;border:none;padding:0;min-width:0;gap:8px;}
+  body.mobile-mode #settings-panel button{border:1px solid var(--border);background:#fff;}
   #toolbar-controls{display:contents;} /* desktop: transparent wrapper, children stay direct flex items of #toolbar */
   #btn-drawer-toggle{display:none;}
   #drawer-backdrop{display:none;}
@@ -347,9 +358,6 @@
     <button id="btn-reload" style="display:none;">Reload from Sheet</button>
     <button id="btn-undo" class="icon-btn" style="display:none;" disabled title="Undo"><span>↶</span><i id="undo-count"></i></button>
     <button id="btn-redo" class="icon-btn" style="display:none;" disabled title="Redo"><span>↷</span><i id="redo-count"></i></button>
-    <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
-    <button id="btn-apply-frd-spec" style="display:none;">Apply FRD/Spec Formulas</button>
-    <button id="btn-align-waterfall" style="display:none;">Align Waterfall</button>
     <button id="btn-mobile-toggle">📱 Mobile view</button>
     <div id="assignee-filter" style="display:none;">
       <button id="btn-assignee">Assignees ▾</button>
@@ -390,6 +398,14 @@
       <option value="24" selected>Zoom: Week</option>
       <option value="42">Zoom: Day</option>
     </select>
+    <div id="settings-menu" style="display:none;">
+      <button id="btn-settings" aria-haspopup="true" aria-expanded="false">⚙ Settings ▾</button>
+      <div id="settings-panel" role="menu">
+        <button id="btn-legend-toggle" style="display:none;">Hide legend</button>
+        <button id="btn-apply-frd-spec" style="display:none;">Apply FRD/Spec Formulas</button>
+        <button id="btn-align-waterfall" style="display:none;">Align Waterfall</button>
+      </div>
+    </div>
     <span id="status"></span>
   </div>
 </div>
@@ -540,7 +556,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-a";
+const BUILD_ID = "2026-10-09-b";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -1215,6 +1231,8 @@ async function onSignedIn() {
   document.getElementById("signin-screen").style.display = "none";
   document.getElementById("timeline-wrap").style.display = "block";
   document.getElementById("btn-signin").textContent = "Re-authenticate";
+  document.getElementById("settings-panel").appendChild(document.getElementById("btn-signin"));
+  document.getElementById("settings-menu").style.display = "inline-block";
   document.getElementById("btn-reload").style.display = "inline-block";
   document.getElementById("btn-today").style.display = "inline-block";
   document.getElementById("btn-undo").style.display = "inline-block";
@@ -3435,6 +3453,15 @@ function buildProductLinePicker() {
   });
 }
 buildProductLinePicker();
+
+(function initSettingsMenu() {
+  const menu = document.getElementById("settings-menu"), btn = document.getElementById("btn-settings"), panel = document.getElementById("settings-panel");
+  const setOpen = (open) => { panel.classList.toggle("open", open); btn.setAttribute("aria-expanded", String(open)); };
+  btn.addEventListener("click", (e) => { e.stopPropagation(); setOpen(!panel.classList.contains("open")); });
+  panel.addEventListener("click", (e) => { if (e.target.closest("button")) setOpen(false); }); // close after picking an item
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) setOpen(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
+})();
 
 /* ============================================================
    Development Comparison view — plan vs actual for one feature.
