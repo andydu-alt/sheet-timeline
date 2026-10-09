@@ -573,7 +573,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-k";
+const BUILD_ID = "2026-10-09-l";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -947,10 +947,10 @@ function remapHistoryEntry(entry, pivot, dir) {
   if (entry.kind === "delete") {
     entry.rowNum = shiftRowNum(entry.rowNum, pivot, dir);
     entry.rowValues = (entry.rowValues || []).map((v) => remapRowRefsInFormula(v, pivot, dir));
-    if (entry.succRestore) {
-      entry.succRestore.rowNum = shiftRowNum(entry.succRestore.rowNum, pivot, dir);
-      entry.succRestore.value = remapRowRefsInFormula(entry.succRestore.value, pivot, dir);
-    }
+    (entry.restores || []).forEach((r) => {
+      r.row = shiftRowNum(r.row, pivot, dir);
+      r.value = remapRowRefsInFormula(r.value, pivot, dir);
+    });
     entry.manualOrderBefore = remapManualOrderMap(entry.manualOrderBefore, pivot, dir);
     return entry;
   }
@@ -4269,15 +4269,18 @@ document.getElementById("nt-create").addEventListener("click", async () => {
    Right-click → Delete task.
 
    1. Confirm the delete itself.
-   2. If the task sits in the MIDDLE of a finish-to-start chain (A → B → C,
-      where B's Start follows A's End and C's Start follows B's End), ask
-      whether C should now start right after A. Deleting the first or last
-      task of a chain asks nothing more.
-   Deleting a sheet row turns every formula that pointed at it into #REF!, so
-   whenever C's Start was a formula on B and is NOT re-chained, it is frozen
-   to the date it currently shows instead.
-   Undo re-inserts the row with its original contents (formulas included) and
-   puts C's Start cell back exactly as it was.
+   2. Scan the WHOLE tab for formulas that reference the row being deleted
+      (any lane, any column) — deleting a row turns those into #REF!.
+   3. If the task has a predecessor (A → B, B's Start follows A's End) and
+      anything depends on B's End, ask once whether those dependents should
+      now follow A instead ("append" them to A). Deleting the first task of a
+      chain (no predecessor) or a task nothing depends on asks nothing more.
+   4. Before the row is removed, every referencing cell is rewritten:
+        - re-chain chosen  → its reference to B's End becomes A's End;
+        - otherwise / any other reference to B → frozen to the value it shows.
+      So no cell is ever left as #REF!.
+   Undo re-inserts the row with its original contents and puts every
+   rewritten cell back exactly as it was.
    ============================================================ */
 
 // The task B's Start follows (by formula, or a literal date one workday after
@@ -4293,53 +4296,112 @@ function findChainPredecessor(t, lane) {
   return p ? { t: p, sameDay: false } : null;
 }
 
-function planTaskDelete(t) {
+// Cell references in a formula: optional sheet prefix, a cell, optional ":cell".
+const DEL_REF_RE = /(?:('[^']*'|[A-Za-z_][A-Za-z0-9_.]*)!)?(\$?)([A-Z]{1,3})(\$?)(\d+)(?::(\$?)([A-Z]{1,3})(\$?)(\d+))?(?![\w(])/g;
+function delRefIsThisSheet(prefix) {
+  if (!prefix) return true;
+  return prefix.replace(/^'|'$/g, "").replace(/''/g, "'") === CONFIG.SHEET_NAME;
+}
+// What a formula needs when row `row` disappears:
+//   "none"   — doesn't reference it (or only as an end of a multi-row range,
+//              which Sheets simply shrinks);
+//   "end"    — references it only via B's End cell (re-chainable);
+//   "other"  — references another cell of that row → must be frozen.
+function delRefKind(formula, row) {
+  let kind = "none";
+  DEL_REF_RE.lastIndex = 0;
+  let m;
+  while ((m = DEL_REF_RE.exec(formula))) {
+    if (!delRefIsThisSheet(m[1])) continue;
+    const r1 = +m[5], r2 = m[9] ? +m[9] : null;
+    if (r2 !== null) { if (r1 === row && r2 === row) return "other"; continue; }
+    if (r1 !== row) continue;
+    if (m[3] === CONFIG.A1.END) kind = "end"; else return "other";
+  }
+  return kind;
+}
+function delRepointEnd(formula, row, newRow) {
+  DEL_REF_RE.lastIndex = 0;
+  return formula.replace(DEL_REF_RE, (all, pre, a1, col, a2, r, ...rest) => {
+    if (rest[3] !== undefined || !delRefIsThisSheet(pre) || +r !== row || col !== CONFIG.A1.END) return all;
+    return `${pre ? pre + "!" : ""}${a1}${col}${a2}${newRow}`;
+  });
+}
+
+// Reads the tab once (formulas + shown values) and works out every cell that
+// would break. Row numbers are PRE-delete.
+async function planTaskDelete(t) {
   const lane = laneForTask(t);
   const pred = findChainPredecessor(t, lane);
-  const succ = lane ? (findDependencyChain(t, lane, t.end)[0] || null) : null;
-  return { lane, pred, succ };
+  const range = `'${CONFIG.SHEET_NAME}'!A1:${CONFIG.LAST_COL}3000`;
+  const [fx, shown] = await Promise.all([
+    sheetsFetch(`/values/${encodeURIComponent(range)}?valueRenderOption=FORMULA&dateTimeRenderOption=FORMATTED_STRING`),
+    sheetsFetch(`/values/${encodeURIComponent(range)}?valueRenderOption=FORMATTED_VALUE`),
+  ]);
+  const F = fx.values || [], V = shown.values || [];
+  const row = t.rowNum;
+  const cells = []; // { row, col, formula, shown, kind }
+  F.forEach((r, i) => {
+    const rowNum = i + 1;
+    if (rowNum === row) return;
+    r.forEach((v, c) => {
+      if (typeof v !== "string" || !v.startsWith("=")) return;
+      const kind = delRefKind(v, row);
+      if (kind !== "none") cells.push({ row: rowNum, col: colIndexToLetter(c), formula: v, shown: (V[i] && V[i][c] != null) ? V[i][c] : "", kind });
+    });
+  });
+  // Same-lane task whose literal Start sits one workday after B — no formula
+  // to break, but it is still B's chain successor and can be re-chained too.
+  const chainNext = lane ? (findDependencyChain(t, lane, t.end)[0] || null) : null;
+  const literalNext = chainNext && !chainNext.t.startIsFormula ? chainNext.t : null;
+  const rowValues = F[row - 1] || [];
+  const dependents = [...new Set([
+    ...cells.filter((c) => c.kind === "end" && c.col === CONFIG.A1.START).map((c) => c.row),
+    ...(literalNext ? [literalNext.rowNum] : []),
+  ])].map((r) => tasks.find((x) => x.rowNum === r)).filter(Boolean);
+  return { lane, pred, cells, literalNext, rowValues, dependents };
 }
 
 // Writes the delete to the sheet and returns its history entry.
-async function performTaskDelete(t, rechain) {
-  const { pred, succ } = planTaskDelete(t);
+async function performTaskDelete(t, rechain, plan) {
+  plan = plan || await planTaskDelete(t);
+  const { pred, cells, literalNext, rowValues } = plan;
   const row = t.rowNum;
-  const A = CONFIG.A1;
+  const S = `'${CONFIG.SHEET_NAME}'!`;
   const manualOrderBefore = JSON.parse(JSON.stringify(manualOrder));
+  const doChain = !!(rechain && pred);
 
-  // Full row contents (formulas, not values) so undo can restore it exactly.
-  const range = `'${CONFIG.SHEET_NAME}'!A${row}:${CONFIG.LAST_COL}${row}`;
-  const got = await sheetsFetch(`/values/${encodeURIComponent(range)}?valueRenderOption=FORMULA&dateTimeRenderOption=FORMATTED_STRING`);
-  const rowValues = (got.values && got.values[0]) || [];
-
-  const succRestore = succ ? {
-    rowNum: succ.t.rowNum,
-    value: succ.t.startIsFormula && succ.t.startFormulaRaw ? succ.t.startFormulaRaw : fmtDate(succ.t.start),
-  } : null;
-
-  setStatus(`Deleting "${blockFullName(t)}"…`, false, true);
-  await deleteSheetRow(row);
-
-  const shift = (r) => (r > row ? r - 1 : r);
-  if (succ) {
-    let value = null;
-    if (rechain && pred) value = succ.sameDay ? `=${A.END}${shift(pred.t.rowNum)}` : buildStartChainFormula(shift(pred.t.rowNum));
-    else if (succ.t.startIsFormula) value = fmtDate(succ.t.start); // would otherwise be #REF!
-    if (value) await writeCells([{ range: `'${CONFIG.SHEET_NAME}'!${A.START}${shift(succ.t.rowNum)}`, values: [[value]] }]);
+  // 1. Rewrite every cell that references the doomed row, in PRE-delete row
+  //    numbers — Sheets then shifts them itself when the row goes.
+  const writes = [], restores = [];
+  cells.forEach((c) => {
+    const value = doChain && c.kind === "end" ? delRepointEnd(c.formula, row, pred.t.rowNum) : c.shown;
+    writes.push({ range: `${S}${c.col}${c.row}`, values: [[value]] });
+    restores.push({ row: c.row, col: c.col, value: c.formula });
+  });
+  if (doChain && literalNext) {
+    writes.push({ range: `${S}${CONFIG.A1.START}${literalNext.rowNum}`, values: [[buildStartChainFormula(pred.t.rowNum)]] });
+    restores.push({ row: literalNext.rowNum, col: CONFIG.A1.START, value: fmtDate(literalNext.start) });
   }
+  setStatus(`Deleting "${blockFullName(t)}"…`, false, true);
+  if (writes.length) await writeCells(writes);
+
+  // 2. Remove the row.
+  await deleteSheetRow(row);
 
   manualOrder = remapManualOrderMap(manualOrder, row, -1);
   saveManualOrder();
 
-  return { kind: "delete", rowNum: row, rowValues, succRestore, rechain: !!(rechain && pred), manualOrderBefore, label: blockFullName(t) };
+  return { kind: "delete", rowNum: row, rowValues, restores, rechain: doChain, fixed: cells.length, manualOrderBefore, label: blockFullName(t) };
 }
 
 async function undoRowDelete(entry) {
   setStatus(`Restoring "${entry.label}"…`, false, true);
   try {
     await insertSheetRow(entry.rowNum);
-    const data = [{ range: `'${CONFIG.SHEET_NAME}'!A${entry.rowNum}:${CONFIG.LAST_COL}${entry.rowNum}`, values: [entry.rowValues] }];
-    if (entry.succRestore) data.push({ range: `'${CONFIG.SHEET_NAME}'!${CONFIG.A1.START}${entry.succRestore.rowNum}`, values: [[entry.succRestore.value]] });
+    const S = `'${CONFIG.SHEET_NAME}'!`;
+    const data = [{ range: `${S}A${entry.rowNum}:${CONFIG.LAST_COL}${entry.rowNum}`, values: [entry.rowValues] }];
+    (entry.restores || []).forEach((r) => data.push({ range: `${S}${r.col}${r.row}`, values: [[r.value]] }));
     await writeCells(data);
     manualOrder = JSON.parse(JSON.stringify(entry.manualOrderBefore));
     saveManualOrder();
@@ -4373,28 +4435,39 @@ async function deleteTaskFromMenu(t) {
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   if (!window.confirm(`Delete "${name}"?\n\nAssignee: ${t.assignee}\n${fmtDate(t.start)} – ${fmtDate(t.end)}\n\nRow ${t.rowNum} will be removed from the sheet. You can undo this.`)) return;
 
-  const { pred, succ } = planTaskDelete(t);
+  let plan;
+  try {
+    setStatus("Checking what depends on this task…", false, true);
+    plan = await planTaskDelete(t);
+  } catch (err) {
+    reportSaveFailure("Delete", err);
+    return;
+  }
+
   let rechain = false;
-  if (pred && succ) {
-    const pName = blockFullName(pred.t), sName = blockFullName(succ.t);
-    const newStart = succ.sameDay ? pred.t.end : excelWorkday(pred.t.end, 1);
+  if (plan.pred && plan.dependents.length) {
+    const pName = blockFullName(plan.pred.t);
+    const list = plan.dependents.slice(0, 6).map((d) => `  • "${blockFullName(d)}" (${d.assignee})`).join("\n") +
+      (plan.dependents.length > 6 ? `\n  • …and ${plan.dependents.length - 6} more` : "");
+    const one = plan.dependents.length === 1;
     rechain = window.confirm(
       `"${name}" is in the middle of a dependency chain:\n\n` +
-      `"${pName}"  →  "${name}"  →  "${sName}"\n\n` +
-      `Do you want "${sName}" to start right after "${pName}" ends (${fmtDate(newStart)})?\n\n` +
-      `OK = chain it to "${pName}"\nCancel = keep its current Start date (${fmtDate(succ.t.start)})`
+      `"${pName}"  →  "${name}"  →  ${one ? `"${blockFullName(plan.dependents[0])}"` : `${plan.dependents.length} tasks`}\n\n` +
+      `Task${one ? "" : "s"} that start after it:\n${list}\n\n` +
+      `Do you want ${one ? "it" : "them"} to start right after "${pName}" ends (${fmtDate(excelWorkday(plan.pred.t.end, 1))})?\n\n` +
+      `OK = chain to "${pName}"\nCancel = keep ${one ? "its" : "their"} current Start date${one ? "" : "s"}`
     );
   }
 
   try {
-    const entry = await performTaskDelete(t, rechain);
+    const entry = await performTaskDelete(t, rechain, plan);
     remapHistory(entry.rowNum, -1, entry);
     undoStack.push(entry);
     if (undoStack.length > MAX_HISTORY) undoStack.shift();
     redoStack = [];
     updateUndoRedoButtons();
     await loadData();
-    setStatus(`Deleted "${entry.label}"${entry.rechain ? " · next task re-chained" : ""} · ${new Date().toLocaleTimeString()}`);
+    setStatus(`Deleted "${entry.label}"${entry.rechain ? " · dependents re-chained" : ""}${entry.fixed ? ` · ${entry.fixed} referencing cell${entry.fixed > 1 ? "s" : ""} updated` : ""} · ${new Date().toLocaleTimeString()}`);
   } catch (err) {
     console.error(err);
     reportSaveFailure("Delete", err);
