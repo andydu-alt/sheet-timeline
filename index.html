@@ -255,6 +255,9 @@
     background:none;border:0;border-radius:6px;cursor:pointer;
   }
   #bar-context-menu button:hover{background:#eef2ff;}
+  #bar-context-menu .ctx-sep{height:1px;background:var(--border);margin:4px 2px;}
+  #bar-context-menu button.ctx-danger{color:#b91c1c;}
+  #bar-context-menu button.ctx-danger:hover{background:#fef2f2;}
 
   /* --- Add-task modal: same shell as the task detail modal --- */
   #new-task-backdrop{
@@ -448,6 +451,8 @@
 <div id="bar-context-menu">
   <button data-where="above">Add task above</button>
   <button data-where="below">Add task below</button>
+  <div class="ctx-sep"></div>
+  <button data-action="delete" class="ctx-danger">Delete task</button>
 </div>
 
 <div id="new-task-backdrop">
@@ -568,7 +573,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-j";
+const BUILD_ID = "2026-10-09-k";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -939,6 +944,16 @@ function remapHistoryEntry(entry, pivot, dir) {
     entry.manualOrderBefore = remapManualOrderMap(entry.manualOrderBefore, pivot, dir);
     return entry;
   }
+  if (entry.kind === "delete") {
+    entry.rowNum = shiftRowNum(entry.rowNum, pivot, dir);
+    entry.rowValues = (entry.rowValues || []).map((v) => remapRowRefsInFormula(v, pivot, dir));
+    if (entry.succRestore) {
+      entry.succRestore.rowNum = shiftRowNum(entry.succRestore.rowNum, pivot, dir);
+      entry.succRestore.value = remapRowRefsInFormula(entry.succRestore.value, pivot, dir);
+    }
+    entry.manualOrderBefore = remapManualOrderMap(entry.manualOrderBefore, pivot, dir);
+    return entry;
+  }
   // Plain state snapshot. On a delete, the removed row's own entry is dropped.
   entry.dates = entry.dates
     .filter((d) => !(dir < 0 && d.rowNum === pivot))
@@ -1081,6 +1096,13 @@ function restoreCellWrite(t, field) {
 async function undo() {
   if (!undoStack.length) return;
   const entry = undoStack.pop();
+  if (entry.kind === "delete") {
+    redoStack.push(entry);
+    if (redoStack.length > MAX_HISTORY) redoStack.shift();
+    updateUndoRedoButtons();
+    await undoRowDelete(entry);
+    return;
+  }
   if (entry.kind === "insert") {
     redoStack.push(entry);
     if (redoStack.length > MAX_HISTORY) redoStack.shift();
@@ -1098,6 +1120,13 @@ async function undo() {
 async function redo() {
   if (!redoStack.length) return;
   const entry = redoStack.pop();
+  if (entry.kind === "delete") {
+    undoStack.push(entry);
+    if (undoStack.length > MAX_HISTORY) undoStack.shift();
+    updateUndoRedoButtons();
+    await redoRowDelete(entry);
+    return;
+  }
   if (entry.kind === "insert") {
     undoStack.push(entry);
     if (undoStack.length > MAX_HISTORY) undoStack.shift();
@@ -3856,6 +3885,11 @@ function attachBarContextMenu(bar, t, lane) {
 }
 
 document.getElementById("bar-context-menu").addEventListener("click", (e) => {
+  if (e.target.dataset && e.target.dataset.action === "delete" && ctxTask) {
+    closeContextMenu();
+    deleteTaskFromMenu(ctxTask);
+    return;
+  }
   const where = e.target.dataset && e.target.dataset.where;
   if (!where || !ctxTask) return;
   closeContextMenu();
@@ -4230,6 +4264,142 @@ document.getElementById("nt-create").addEventListener("click", async () => {
     setStatus("Create failed: " + err.message, true);
   }
 });
+
+/* ============================================================
+   Right-click → Delete task.
+
+   1. Confirm the delete itself.
+   2. If the task sits in the MIDDLE of a finish-to-start chain (A → B → C,
+      where B's Start follows A's End and C's Start follows B's End), ask
+      whether C should now start right after A. Deleting the first or last
+      task of a chain asks nothing more.
+   Deleting a sheet row turns every formula that pointed at it into #REF!, so
+   whenever C's Start was a formula on B and is NOT re-chained, it is frozen
+   to the date it currently shows instead.
+   Undo re-inserts the row with its original contents (formulas included) and
+   puts C's Start cell back exactly as it was.
+   ============================================================ */
+
+// The task B's Start follows (by formula, or a literal date one workday after
+// its End), within B's lane.
+function findChainPredecessor(t, lane) {
+  if (!lane) return null;
+  const others = lane.idxs.map((i) => tasks[i]).filter((x) => x !== t);
+  if (t.startIsFormula) {
+    for (const p of others) { const kind = startFormulaRefKind(t, p.rowNum); if (kind) return { t: p, sameDay: kind === "sameday" }; }
+    return null;
+  }
+  const p = others.find((x) => dayOffset(t.start) === dayOffset(x.end) + 1);
+  return p ? { t: p, sameDay: false } : null;
+}
+
+function planTaskDelete(t) {
+  const lane = laneForTask(t);
+  const pred = findChainPredecessor(t, lane);
+  const succ = lane ? (findDependencyChain(t, lane, t.end)[0] || null) : null;
+  return { lane, pred, succ };
+}
+
+// Writes the delete to the sheet and returns its history entry.
+async function performTaskDelete(t, rechain) {
+  const { pred, succ } = planTaskDelete(t);
+  const row = t.rowNum;
+  const A = CONFIG.A1;
+  const manualOrderBefore = JSON.parse(JSON.stringify(manualOrder));
+
+  // Full row contents (formulas, not values) so undo can restore it exactly.
+  const range = `'${CONFIG.SHEET_NAME}'!A${row}:${CONFIG.LAST_COL}${row}`;
+  const got = await sheetsFetch(`/values/${encodeURIComponent(range)}?valueRenderOption=FORMULA&dateTimeRenderOption=FORMATTED_STRING`);
+  const rowValues = (got.values && got.values[0]) || [];
+
+  const succRestore = succ ? {
+    rowNum: succ.t.rowNum,
+    value: succ.t.startIsFormula && succ.t.startFormulaRaw ? succ.t.startFormulaRaw : fmtDate(succ.t.start),
+  } : null;
+
+  setStatus(`Deleting "${blockFullName(t)}"…`, false, true);
+  await deleteSheetRow(row);
+
+  const shift = (r) => (r > row ? r - 1 : r);
+  if (succ) {
+    let value = null;
+    if (rechain && pred) value = succ.sameDay ? `=${A.END}${shift(pred.t.rowNum)}` : buildStartChainFormula(shift(pred.t.rowNum));
+    else if (succ.t.startIsFormula) value = fmtDate(succ.t.start); // would otherwise be #REF!
+    if (value) await writeCells([{ range: `'${CONFIG.SHEET_NAME}'!${A.START}${shift(succ.t.rowNum)}`, values: [[value]] }]);
+  }
+
+  manualOrder = remapManualOrderMap(manualOrder, row, -1);
+  saveManualOrder();
+
+  return { kind: "delete", rowNum: row, rowValues, succRestore, rechain: !!(rechain && pred), manualOrderBefore, label: blockFullName(t) };
+}
+
+async function undoRowDelete(entry) {
+  setStatus(`Restoring "${entry.label}"…`, false, true);
+  try {
+    await insertSheetRow(entry.rowNum);
+    const data = [{ range: `'${CONFIG.SHEET_NAME}'!A${entry.rowNum}:${CONFIG.LAST_COL}${entry.rowNum}`, values: [entry.rowValues] }];
+    if (entry.succRestore) data.push({ range: `'${CONFIG.SHEET_NAME}'!${CONFIG.A1.START}${entry.succRestore.rowNum}`, values: [[entry.succRestore.value]] });
+    await writeCells(data);
+    manualOrder = JSON.parse(JSON.stringify(entry.manualOrderBefore));
+    saveManualOrder();
+    remapHistory(entry.rowNum, +1, entry);
+    await loadData();
+    setStatus(`Restored "${entry.label}" at row ${entry.rowNum} · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Undo of the delete failed — reload to resync: " + err.message, true);
+  }
+}
+
+async function redoRowDelete(entry) {
+  setStatus(`Deleting "${entry.label}" again…`, false, true);
+  try {
+    const t = tasks.find((x) => x.rowNum === entry.rowNum);
+    if (!t) throw new Error(`row ${entry.rowNum} is no longer in the sheet`);
+    Object.assign(entry, await performTaskDelete(t, entry.rechain));
+    remapHistory(entry.rowNum, -1, entry);
+    await loadData();
+    setStatus(`Deleted "${entry.label}" · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Redo of the delete failed — reload to resync: " + err.message, true);
+  }
+}
+
+async function deleteTaskFromMenu(t) {
+  const name = blockFullName(t);
+  // Let the menu close and the page repaint before the blocking dialogs.
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  if (!window.confirm(`Delete "${name}"?\n\nAssignee: ${t.assignee}\n${fmtDate(t.start)} – ${fmtDate(t.end)}\n\nRow ${t.rowNum} will be removed from the sheet. You can undo this.`)) return;
+
+  const { pred, succ } = planTaskDelete(t);
+  let rechain = false;
+  if (pred && succ) {
+    const pName = blockFullName(pred.t), sName = blockFullName(succ.t);
+    const newStart = succ.sameDay ? pred.t.end : excelWorkday(pred.t.end, 1);
+    rechain = window.confirm(
+      `"${name}" is in the middle of a dependency chain:\n\n` +
+      `"${pName}"  →  "${name}"  →  "${sName}"\n\n` +
+      `Do you want "${sName}" to start right after "${pName}" ends (${fmtDate(newStart)})?\n\n` +
+      `OK = chain it to "${pName}"\nCancel = keep its current Start date (${fmtDate(succ.t.start)})`
+    );
+  }
+
+  try {
+    const entry = await performTaskDelete(t, rechain);
+    remapHistory(entry.rowNum, -1, entry);
+    undoStack.push(entry);
+    if (undoStack.length > MAX_HISTORY) undoStack.shift();
+    redoStack = [];
+    updateUndoRedoButtons();
+    await loadData();
+    setStatus(`Deleted "${entry.label}"${entry.rechain ? " · next task re-chained" : ""} · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    console.error(err);
+    reportSaveFailure("Delete", err);
+  }
+}
 
 /* ============================================================
    Boot
