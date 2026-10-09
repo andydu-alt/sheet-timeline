@@ -573,7 +573,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-l";
+const BUILD_ID = "2026-10-09-m";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -692,6 +692,14 @@ function colIndexToLetter(index) {
 // found and has no override is a hard error — surfacing a moved/renamed
 // column immediately beats silently reading or writing the wrong one.
 async function resolveColumns() {
+  // The tab's numeric id (needed for inserting/deleting rows) is looked up by
+  // NAME on every load. Tabs in this workbook get re-created from backups,
+  // which gives them a new id under the same name — a hard-coded id then
+  // points at a deleted tab (or worse, at the renamed "… Old" copy).
+  const meta = await sheetsFetch("?fields=sheets.properties(sheetId,title)");
+  const tab = (meta.sheets || []).map((x) => x.properties).find((x) => x.title === CONFIG.SHEET_NAME);
+  if (!tab) throw new Error(`Tab "${CONFIG.SHEET_NAME}" not found in the spreadsheet — it may have been renamed.`);
+  CONFIG.SHEET_ID = tab.sheetId;
   const headerRow = (await sheetsFetch(`/values/${encodeURIComponent(`'${CONFIG.SHEET_NAME}'!1:1`)}?majorDimension=ROWS`)).values?.[0] || [];
   const byHeader = new Map(); // normalized header text -> 0-based index
   headerRow.forEach((h, i) => {
@@ -4386,8 +4394,17 @@ async function performTaskDelete(t, rechain, plan) {
   setStatus(`Deleting "${blockFullName(t)}"…`, false, true);
   if (writes.length) await writeCells(writes);
 
-  // 2. Remove the row.
-  await deleteSheetRow(row);
+  // 2. Remove the row. If that fails, put the rewritten cells back so a
+  //    failed delete leaves the sheet exactly as it was.
+  try {
+    await deleteSheetRow(row);
+  } catch (err) {
+    if (restores.length) {
+      try { await writeCells(restores.map((r) => ({ range: `${S}${r.col}${r.row}`, values: [[r.value]] }))); }
+      catch (e2) { err.message += " — AND restoring the changed cells failed: " + e2.message; }
+    }
+    throw err;
+  }
 
   manualOrder = remapManualOrderMap(manualOrder, row, -1);
   saveManualOrder();
