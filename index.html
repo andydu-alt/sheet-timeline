@@ -307,9 +307,11 @@
   #compare-legend{display:none;gap:14px;align-items:center;font-size:11.5px;color:var(--muted);padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;flex-shrink:0;}
   body.compare-mode #compare-legend{display:flex;}
   #compare-legend .k-plan,#compare-legend .k-act{display:inline-block;width:26px;height:11px;border-radius:3px;margin-right:5px;vertical-align:middle;}
-  #compare-legend .k-plan{background:#fff;border:1.5px dashed #64748b;}
+  #compare-legend .k-plan{background:#fff;border:1.5px solid #64748b;}
   #compare-legend .k-act{background:#cbd5e1;border:1.5px solid #64748b;}
   #compare-legend .late{color:#b91c1c;font-weight:600;} #compare-legend .early{color:#047857;font-weight:600;}
+  #compare-wrap{cursor:grab;user-select:none;}
+  #compare-wrap.panning{cursor:grabbing;}
   #compare-wrap{display:none;flex:1;overflow:auto;position:relative;background:var(--panel);}
   body.compare-mode #compare-wrap{display:block;}
   #cmp-grid{position:relative;}
@@ -320,7 +322,7 @@
   .cmp-head .day-cell.we{background:#f6f7f9;}
   .cmp-we{position:absolute;top:0;bottom:0;background:#f8f9fb;z-index:0;}
   .cmp-bar{position:absolute;z-index:1;border-radius:5px;font-size:11.5px;color:#000;display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:visible;cursor:default;box-sizing:border-box;}
-  .cmp-bar.plan{height:22px;background:#fff;border:1.5px dashed var(--c);}
+  .cmp-bar.plan{height:22px;background:#fff;border:1.5px solid var(--c);}
   .cmp-bar.act{height:16px;background:var(--f);border:1.5px solid var(--c);}
   .cmp-bar.noplan{height:22px;padding:0 2px;}
   .cmp-bar.noplan i{color:var(--muted);font-size:10.5px;margin-left:6px;}
@@ -544,7 +546,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-e";
+const BUILD_ID = "2026-10-09-f";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -1301,8 +1303,8 @@ document.getElementById("drawer-backdrop").addEventListener("click", () => setDr
 /* ============================================================
    Pan the view by dragging empty space (not a bar / label / control)
    ============================================================ */
-(function setupPan() {
-  const wrap = document.getElementById("timeline-wrap");
+["timeline-wrap", "compare-wrap"].forEach(function setupPan(id) {
+  const wrap = document.getElementById(id);
   let panning = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
   wrap.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".bar") || e.target.closest(".ext-label") || e.target.closest(".lane-label")) return;
@@ -1327,7 +1329,7 @@ document.getElementById("drawer-backdrop").addEventListener("click", () => setDr
     panning = false;
     wrap.classList.remove("panning");
   });
-})();
+});
 
 /* ============================================================
    Data loading
@@ -3557,7 +3559,13 @@ function parseCompareRows(values) {
   });
   return tasks;
 }
-function cmpTaskName(t) { return t.item ? `${t.item} • ${t.title}` : t.title; }
+// Role-only titles ("DIR DEV", "MANUAL QA", "TRANS DEV"…) add nothing next to
+// the work item and the lane's assignee, so the name is just the work item.
+const CMP_GENERIC_TITLE_RE = /^((dir|trans|ctr|ui|be|fe)\s*)?dev$|^(manual|auto(mated)?|perf\w*)\s*qa$/i;
+function cmpTaskName(t) {
+  const title = CMP_GENERIC_TITLE_RE.test(t.title) ? "" : t.title;
+  return t.item && title ? `${t.item} • ${title}` : (t.item || title || "Task");
+}
 
 async function loadCompare() {
   const f = COMPARE_FEATURES[compareFeatureId];
@@ -3604,23 +3612,8 @@ function renderCompare(tasks) {
   const key = t => (t.planStart || t.actStart).getTime();
   const laneList = [...lanes.entries()].map(([name, ts]) => [name, ts.sort((a, b) => key(a) - key(b))])
     .sort((a, b) => key(a[1][0]) - key(b[1][0]));
-  // Pack each lane like the Product Timeline: a task reuses the first
-  // sub-row whose last occupant (plan, actual and the plan label's text,
-  // which may run past the bar) ends before this task starts.
-  const textW = (t) => cmpTaskName(t).length * 6.4 + 24;
-  const packed = laneList.map(([name, ts]) => {
-    const ends = [];
-    const placed = ts.map(t => {
-      const starts = [t.planStart, t.actStart].filter(Boolean).map(x);
-      const from = Math.min(...starts);
-      const to = Math.max(...[t.planEnd, t.actEnd].filter(Boolean).map(d => x(d) + PX), x(t.planStart || t.actStart) + textW(t) + 70) + 8;
-      let r = ends.findIndex(e => e <= from);
-      if (r < 0) { r = ends.length; ends.push(0); }
-      ends[r] = to;
-      return { t, r };
-    });
-    return [name, ts, placed, ends.length];
-  });
+  // One task per row, in start-date order inside each lane — a waterfall.
+  const packed = laneList.map(([name, ts]) => [name, ts, ts.map((t, r) => ({ t, r })), ts.length]);
   const H = HEAD + packed.reduce((n, l) => n + l[3] * SLOT, 0);
 
   // Colour by work item (Discovery, Backup data, …) — the Feature-level
