@@ -292,7 +292,10 @@
 
   body.mobile-mode #mobile-vscroll-thumb{position:absolute;left:0;right:0;top:0;background:rgba(37,99,235,.55);border-radius:3px;}
 
-  /* --- Development Comparison view (plan vs actual) --- */
+  /* --- Development Comparison view (plan vs actual) ---
+     Same look as the Product Timeline: assignee lane labels on the left,
+     month/day header, week lines, today line. Each task gets a stacked pair:
+     PLAN (dashed border, white fill, carries the label) over ACTUAL (solid). */
   #view-mode, #compare-feature{display:none;}
   body.compare-mode #timeline-wrap, body.compare-mode #legend,
   body.compare-mode #mobile-hscroll, body.compare-mode #mobile-vscroll,
@@ -301,45 +304,29 @@
   body.compare-mode #btn-align-waterfall, body.compare-mode #assignee-filter,
   body.compare-mode #activity-filter, body.compare-mode #feature-filter,
   body.compare-mode #zoom{display:none !important;}
-  #compare-wrap{display:none;flex:1;overflow:auto;background:var(--panel);position:relative;}
+  #compare-legend{display:none;gap:14px;align-items:center;font-size:11.5px;color:var(--muted);padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;flex-shrink:0;}
+  body.compare-mode #compare-legend{display:flex;}
+  #compare-legend .k-plan,#compare-legend .k-act{display:inline-block;width:26px;height:11px;border-radius:3px;margin-right:5px;vertical-align:middle;}
+  #compare-legend .k-plan{background:#fff;border:1.5px dashed #64748b;}
+  #compare-legend .k-act{background:#cbd5e1;border:1.5px solid #64748b;}
+  #compare-legend .late{color:#b91c1c;font-weight:600;} #compare-legend .early{color:#047857;font-weight:600;}
+  #compare-wrap{display:none;flex:1;overflow:auto;position:relative;background:var(--panel);}
   body.compare-mode #compare-wrap{display:block;}
-  #cmp-key{display:flex;gap:18px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted);padding:8px 14px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;left:0;top:0;z-index:8;}
-  #cmp-key .k-plan,#cmp-key .k-act{display:inline-block;width:28px;height:10px;border-radius:3px;margin-right:6px;vertical-align:middle;}
-  #cmp-key .k-plan{background:#fff;border:1.5px dashed #64748b;}
-  #cmp-key .k-act{background:#64748b;}
-  #cmp-key .k-late{color:#b91c1c;font-weight:600;} #cmp-key .k-early{color:#047857;font-weight:600;}
-  #cmp-grid{position:relative;width:max-content;}
-  .cmp-row{display:flex;border-bottom:1px solid #eef0f3;}
-  .cmp-side{position:sticky;left:0;z-index:4;background:var(--panel);flex-shrink:0;display:grid;grid-template-columns:var(--cmp-cols);border-right:1px solid var(--border);}
-  .cmp-side > div{padding:0 8px;display:flex;align-items:center;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .cmp-side .num{justify-content:flex-end;font-variant-numeric:tabular-nums;}
-  .cmp-side .name{flex-direction:column;align-items:flex-start;justify-content:center;gap:1px;}
-  .cmp-side .name b{font-weight:600;font-size:12.5px;max-width:100%;overflow:hidden;text-overflow:ellipsis;}
-  .cmp-side .name small{color:var(--muted);font-size:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis;}
-  .cmp-side .actual{background:#f8fafc;}
-  .cmp-side .late{color:#b91c1c;font-weight:600;} .cmp-side .early{color:#047857;font-weight:600;}
-  .cmp-head{position:sticky;top:35px;z-index:6;background:var(--panel);border-bottom:1px solid var(--border);}
-  .cmp-head .cmp-side > div{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;}
-  .cmp-head .cmp-side{z-index:7;}
-  .cmp-head .grp{justify-content:center;border-bottom:1px solid var(--border);}
-  .cmp-lane, .cmp-lane .cmp-side{background:#f1f5f9;}
-  .cmp-lane .cmp-side > div{grid-column:1 / -1;font-size:13px;font-weight:600;gap:8px;}
-  .cmp-lane .swatch{width:10px;height:10px;border-radius:3px;display:inline-block;}
-  .cmp-track{position:relative;flex-shrink:0;}
-  .cmp-day{position:absolute;top:0;bottom:0;}
-  .cmp-day.we{background:#f6f7f9;}
-  .cmp-lane .cmp-day.we{background:#e9edf2;}
-  .cmp-today{position:absolute;top:0;bottom:0;width:2px;background:var(--today);opacity:.7;pointer-events:none;z-index:2;}
-  .cmp-bar{position:absolute;height:12px;border-radius:3px;cursor:default;z-index:3;box-sizing:border-box;}
-  .cmp-bar.plan{top:6px;background:#fff;border:1.5px dashed var(--c);}
-  .cmp-bar.act{top:22px;background:var(--c);border:1.5px solid var(--c);}
-  .cmp-bar:hover{box-shadow:0 0 0 2px rgba(37,99,235,.35);}
-  .cmp-delta{position:absolute;top:20px;font-size:10.5px;font-weight:600;white-space:nowrap;padding-left:5px;pointer-events:none;z-index:3;}
+  #cmp-grid{position:relative;}
+  .cmp-head{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--border);height:56px;}
+  .cmp-head .corner{position:sticky;left:0;top:0;z-index:30;width:118px;height:56px;background:var(--panel);border-right:1px solid var(--border);}
+  .cmp-head .month-cell{top:0;}
+  .cmp-head .day-cell{top:34px;border-top:1px solid var(--border);}
+  .cmp-head .day-cell.we{background:#f6f7f9;}
+  .cmp-we{position:absolute;top:0;bottom:0;background:#f8f9fb;z-index:0;}
+  .cmp-bar{position:absolute;z-index:1;border-radius:5px;font-size:11.5px;color:#000;display:flex;align-items:center;padding:0 8px;white-space:nowrap;overflow:visible;cursor:default;box-sizing:border-box;}
+  .cmp-bar.plan{height:22px;background:#fff;border:1.5px dashed var(--c);}
+  .cmp-bar.act{height:16px;background:var(--f);border:1.5px solid var(--c);}
+  .cmp-bar.noplan{height:22px;padding:0 2px;}
+  .cmp-bar.noplan i{color:var(--muted);font-size:10.5px;margin-left:6px;}
+  .cmp-bar:hover{box-shadow:0 0 0 2px rgba(37,99,235,.35);z-index:4;}
+  .cmp-delta{position:absolute;font-size:10.5px;font-weight:600;white-space:nowrap;padding-left:5px;pointer-events:none;z-index:2;line-height:16px;}
   .cmp-delta.late{color:#b91c1c;} .cmp-delta.early{color:#047857;}
-  .cmp-months,.cmp-days{position:relative;height:18px;}
-  .cmp-months > div,.cmp-days > div{position:absolute;top:0;height:18px;font-size:10.5px;color:var(--muted);display:flex;align-items:center;justify-content:center;border-left:1px solid #eef0f3;overflow:hidden;}
-  .cmp-months > div{justify-content:flex-start;padding-left:4px;font-weight:600;color:var(--text);}
-  .cmp-days > div.we{background:#f6f7f9;}
   #cmp-empty{padding:40px;color:var(--muted);text-align:center;}
 </style>
 </head>
@@ -426,7 +413,8 @@
 <div id="timeline-wrap">
   <div id="grid"></div>
 </div>
-<div id="compare-wrap"><div id="cmp-key"><span><span class="k-plan"></span>Plan</span><span><span class="k-act"></span>Actual</span><span><span class="k-late">+3d</span> due later than plan · <span class="k-early">-2d</span> earlier (working days)</span><span>Hover a bar for estimate and actual duration</span></div><div id="cmp-grid"></div></div>
+<div id="compare-legend"><span><span class="k-plan"></span>Plan</span><span><span class="k-act"></span>Actual</span><span><span class="late">+3d</span> due later than plan · <span class="early">-2d</span> earlier (working days)</span><span>Hover a bar for estimate and actual duration</span></div>
+<div id="compare-wrap"><div id="cmp-grid"></div></div>
 <div id="mobile-hscroll"><div id="mobile-hscroll-thumb"></div></div>
 <div id="mobile-vscroll"><div id="mobile-vscroll-thumb"></div></div>
 
@@ -556,7 +544,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-b";
+const BUILD_ID = "2026-10-09-e";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -3477,16 +3465,15 @@ const COMPARE_FEATURES = {
     SPREADSHEET_ID: "12JItIbdDl89x4FfI7EqH-pli6c9zi3tYXBNKHkGSALM",
     SHEET_ID: 1576268793, // "Development Ganttchart" — found by gid; its title has trailing spaces
   },
+  "mssql": {
+    LABEL: "MSSQL",
+    SPREADSHEET_ID: "17jkz5jYRaJvjmze9PrqLpszCEZhDwsuuA8t-7LbZBZI",
+    SHEET_ID: 534286970, // "Development Ganttchart"
+  },
 };
 const COMPARE_SOURCES = ["database"]; // product lines that offer the view picker
 const VIEW_STORAGE_KEY = "sheet_timeline_view_v1";
 const CMP_PX_PER_DAY = 22;
-const CMP_ROW_H = 40;
-const CMP_COLS = [ // left table: [header, width px, group]
-  ["Task", 300], ["Start", 82, "Plan"], ["Due", 82, "Plan"],
-  ["Start", 82, "Actual"], ["Due", 82, "Actual"], ["Δ Due", 56],
-];
-const CMP_LANE_COLORS = ["#2563eb","#059669","#d97706","#7c3aed","#db2777","#0891b2","#65a30d","#dc2626"];
 let viewMode = "timeline";
 let compareFeatureId = Object.keys(COMPARE_FEATURES)[0];
 let compareLoaded = null; // feature id currently drawn
@@ -3505,25 +3492,66 @@ function cmpWorkdayDiff(a, b) {
   return sign * n;
 }
 
-// Parses the "Dev & QA part" block. A work-item header row has a number in
-// B and its title in D (no assignee). Task rows: C Jira, D title, E assignee,
-// F status, G estimate, H/I plan start/due, J actual duration, K/L actual start/due.
+// Each feature's Gantt tab lays its columns out differently (Oracle v3 vs
+// MSSQL), so columns are found by header name on the row that carries
+// "TASK TITLE" + "START DATE". Rows below it are read until the end; if the
+// tab has a "Dev & QA part" marker, only that block is read.
+// A row with a number in the WBS column and no real owner is a work-item
+// header (its title becomes the item name for the tasks under it). Rows
+// owned by a role placeholder ("Dev Director", "QA Manual", "MILESTONES",
+// …) are roll-ups of the real tasks and are skipped.
+const CMP_HEADERS = {
+  wbs: ["wbs number"], jira: ["jira"], title: ["task title"],
+  owner: ["assignee", "task owner"], status: ["status"],
+  est: ["estimate (manday)", "original duration", "estimate"],
+  planStart: ["start date"], planEnd: ["due date"],
+  actDur: ["actual duration"], actStart: ["actual start date"], actEnd: ["actual due date"],
+};
+const CMP_ROLE_RE = /^(dev|qa|msp)\b|^milestones?$/i;
+
+// "11/6" (no year) is common in the actual-date columns: borrow the year of
+// a reference date, rolling into the next year if the month went backwards.
+function cmpParseDate(str, ref) {
+  const d = parseDate(str);
+  if (d || !ref) return d;
+  const m = (str || "").trim().match(/^(\d{1,2})[\/\-](\d{1,2})$/);
+  if (!m) return null;
+  let y = ref.getFullYear();
+  if (+m[1] - 1 < ref.getMonth()) y++;
+  return new Date(y, +m[1] - 1, +m[2]);
+}
+
 function parseCompareRows(values) {
+  const norm = (v) => (v == null ? "" : String(v)).trim().toLowerCase().replace(/\s+/g, " ");
+  const hdrIdx = values.findIndex(r => { const n = r.map(norm); return n.includes("task title") && n.includes("start date"); });
+  if (hdrIdx < 0) throw new Error('Header row with "TASK TITLE" and "START DATE" not found.');
+  const hdr = values[hdrIdx].map(norm), col = {};
+  for (const [k, names] of Object.entries(CMP_HEADERS)) col[k] = names.map(n => hdr.indexOf(n)).find(i => i >= 0) ?? -1;
+  const missing = ["title", "owner", "planStart", "planEnd", "actStart", "actEnd"].filter(k => col[k] < 0);
+  if (missing.length) throw new Error("Missing column(s): " + missing.join(", "));
+  const get = (row, k) => col[k] < 0 ? "" : cmpCell(row, col[k]);
+
+  const marker = values.findIndex(r => /^dev\s*&\s*qa part$/i.test(cmpCell(r, 1)));
   const tasks = [];
-  let inBlock = false, item = "";
+  let item = "", inBlock = marker < 0;
   values.forEach((row, i) => {
+    if (i <= hdrIdx) return;
     const b = cmpCell(row, 1);
-    if (/^dev\s*&\s*qa part$/i.test(b)) { inBlock = true; return; }
+    if (marker >= 0) {
+      if (i === marker) { inBlock = true; return; }
+      if (inBlock && / part$/i.test(b)) { inBlock = false; return; }
+    }
     if (!inBlock) return;
-    if (/ part$/i.test(b)) { inBlock = false; return; } // a later "... part" section ends the block
-    if (b && cmpCell(row, 3) && !cmpCell(row, 4)) { item = cmpCell(row, 3); return; }
-    const assignee = cmpCell(row, 4);
-    const planStart = parseDate(cmpCell(row, 7)), planEnd = parseDate(cmpCell(row, 8));
-    const actStart = parseDate(cmpCell(row, 10)), actEnd = parseDate(cmpCell(row, 11));
-    if (!assignee || (!planStart && !actStart)) return;
+    const owner = get(row, "owner"), title = get(row, "title"), wbs = get(row, "wbs");
+    if (wbs && title && (!owner || CMP_ROLE_RE.test(owner))) { item = title; return; }
+    if (!owner || CMP_ROLE_RE.test(owner)) return;
+    const planStart = cmpParseDate(get(row, "planStart")), planEnd = cmpParseDate(get(row, "planEnd"), planStart);
+    const actStart = cmpParseDate(get(row, "actStart"), planStart), actEnd = cmpParseDate(get(row, "actEnd"), actStart || planStart);
+    if (!planStart && !actStart) return;
+    const jira = get(row, "jira");
     tasks.push({
-      rowNum: i + 1, item, title: cmpCell(row, 3), jira: cmpCell(row, 2), assignee,
-      status: cmpCell(row, 5), est: cmpCell(row, 6), actDur: cmpCell(row, 9),
+      rowNum: i + 1, item, title, jira: /^[A-Z]+-\d+$/.test(jira) ? jira : "", assignee: owner,
+      status: get(row, "status"), est: get(row, "est"), actDur: get(row, "actDur"),
       planStart, planEnd: planEnd || planStart, actStart, actEnd: actEnd || actStart,
     });
   });
@@ -3562,79 +3590,99 @@ function renderCompare(tasks) {
   const grid = document.getElementById("cmp-grid");
   grid._tasks = tasks;
   if (!tasks.length) { grid.innerHTML = `<div id="cmp-empty">No Dev &amp; QA tasks with dates found.</div>`; return; }
+  const LW = 118, PX = CMP_PX_PER_DAY, SLOT = 48, HEAD = 56;
   const all = tasks.flatMap(t => [t.planStart, t.planEnd, t.actStart, t.actEnd]).filter(Boolean);
   const origin = new Date(Math.min(...all)); origin.setDate(origin.getDate() - 3);
-  const last = new Date(Math.max(...all)); last.setDate(last.getDate() + 10);
-  const days = cmpDayIndex(last, origin) + 1, W = days * CMP_PX_PER_DAY;
-  const sideW = CMP_COLS.reduce((s, c) => s + c[1], 0);
-  grid.style.setProperty("--cmp-cols", CMP_COLS.map(c => c[1] + "px").join(" "));
-  const x = (d) => cmpDayIndex(d, origin) * CMP_PX_PER_DAY;
+  const last = new Date(Math.max(...all)); last.setDate(last.getDate() + 21);
+  const days = cmpDayIndex(last, origin) + 1, W = LW + days * PX;
+  const x = (d) => LW + cmpDayIndex(d, origin) * PX;
   const dayAt = (i) => { const d = new Date(origin); d.setDate(d.getDate() + i); return d; };
 
-  // Lanes: one per assignee, ordered by their first plan start; tasks by plan start.
+  // Lanes: one per assignee, ordered by first plan start; tasks by plan start.
   const lanes = new Map();
   tasks.forEach(t => { if (!lanes.has(t.assignee)) lanes.set(t.assignee, []); lanes.get(t.assignee).push(t); });
   const key = t => (t.planStart || t.actStart).getTime();
   const laneList = [...lanes.entries()].map(([name, ts]) => [name, ts.sort((a, b) => key(a) - key(b))])
     .sort((a, b) => key(a[1][0]) - key(b[1][0]));
+  // Pack each lane like the Product Timeline: a task reuses the first
+  // sub-row whose last occupant (plan, actual and the plan label's text,
+  // which may run past the bar) ends before this task starts.
+  const textW = (t) => cmpTaskName(t).length * 6.4 + 24;
+  const packed = laneList.map(([name, ts]) => {
+    const ends = [];
+    const placed = ts.map(t => {
+      const starts = [t.planStart, t.actStart].filter(Boolean).map(x);
+      const from = Math.min(...starts);
+      const to = Math.max(...[t.planEnd, t.actEnd].filter(Boolean).map(d => x(d) + PX), x(t.planStart || t.actStart) + textW(t) + 70) + 8;
+      let r = ends.findIndex(e => e <= from);
+      if (r < 0) { r = ends.length; ends.push(0); }
+      ends[r] = to;
+      return { t, r };
+    });
+    return [name, ts, placed, ends.length];
+  });
+  const H = HEAD + packed.reduce((n, l) => n + l[3] * SLOT, 0);
 
-  // Weekend stripes + today line, shared by every row's track.
-  let stripes = "", months = "", dayCells = "";
+  // Colour by work item (Discovery, Backup data, …) — the Feature-level
+  // grouping here — using the timeline's own activity palette.
+  const items = [...new Set(tasks.map(t => t.item || t.title))];
+  const fillOf = (t) => ACTIVITY_PALETTE[items.indexOf(t.item || t.title) % ACTIVITY_PALETTE.length];
+
+  let head = `<div class="corner"></div>`, back = "";
   for (let i = 0; i < days; i++) {
-    const d = dayAt(i), we = d.getDay() === 0 || d.getDay() === 6, left = i * CMP_PX_PER_DAY;
-    if (we) stripes += `<div class="cmp-day we" style="left:${left}px;width:${CMP_PX_PER_DAY}px"></div>`;
-    dayCells += `<div class="${we ? "we" : ""}" style="left:${left}px;width:${CMP_PX_PER_DAY}px">${d.getDate()}</div>`;
+    const d = dayAt(i), we = d.getDay() === 0 || d.getDay() === 6, left = LW + i * PX;
+    head += `<div class="day-cell${we ? " we" : ""}${d.getDay() === 1 ? " week-start" : ""}" style="left:${left}px;width:${PX}px">${d.getDate()}</div>`;
     if (i === 0 || d.getDate() === 1) {
       const span = Math.min(cmpDayIndex(new Date(d.getFullYear(), d.getMonth() + 1, 1), origin), days) - i;
-      months += `<div style="left:${left}px;width:${span * CMP_PX_PER_DAY}px">${d.toLocaleString("en", { month: "short", year: "numeric" })}</div>`;
+      head += `<div class="month-cell" style="left:${left}px;width:${span * PX}px">${d.toLocaleString("en", { month: "short", year: "numeric" })}</div>`;
     }
+    if (we) back += `<div class="cmp-we" style="left:${left}px;width:${PX}px;top:${HEAD}px"></div>`;
+    if (d.getDay() === 1) back += `<div class="week-line" style="left:${left}px;top:${HEAD}px"></div>`;
   }
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const todayLine = today >= origin && today <= last ? `<div class="cmp-today" style="left:${x(today) + CMP_PX_PER_DAY / 2}px"></div>` : "";
+  if (today >= origin && today <= last) back += `<div class="today-line" style="left:${x(today) + PX / 2}px;top:${HEAD}px"></div>`;
 
-  // Header: grouped column titles (Plan / Actual) on the left, months + days on the right.
-  const head = [];
-  CMP_COLS.forEach(([h, , g], i) => {
-    const bg = g === "Actual" ? "background:#f8fafc;" : "";
-    if (!g) head.push(`<div style="grid-row:1 / 3;grid-column:${i + 1};${i ? "justify-content:flex-end;" : ""}">${escapeHtml(h)}</div>`);
-    else {
-      if (!CMP_COLS[i - 1] || CMP_COLS[i - 1][2] !== g) head.push(`<div class="grp" style="grid-row:1;grid-column:${i + 1} / span 2;${bg}">${g}</div>`);
-      head.push(`<div style="grid-row:2;grid-column:${i + 1};justify-content:flex-end;${bg}">${escapeHtml(h)}</div>`);
-    }
-  });
-  let html = `<div class="cmp-row cmp-head"><div class="cmp-side" style="width:${sideW}px;grid-template-rows:18px 18px">${head.join("")}</div>` +
-    `<div class="cmp-track" style="width:${W}px"><div class="cmp-months">${months}</div><div class="cmp-days">${dayCells}</div></div></div>`;
-
-  const fmt = d => d ? fmtDate(d) : "–";
-  laneList.forEach(([name, ts], li) => {
-    const c = CMP_LANE_COLORS[li % CMP_LANE_COLORS.length];
-    html += `<div class="cmp-row cmp-lane" style="height:28px"><div class="cmp-side" style="width:${sideW}px"><div><span class="swatch" style="background:${c}"></span>${escapeHtml(name)} <small style="font-weight:400;color:var(--muted)">${ts.length} task${ts.length > 1 ? "s" : ""}</small></div></div>` +
-      `<div class="cmp-track" style="width:${W}px;height:28px">${stripes}${todayLine}</div></div>`;
-    ts.forEach(t => {
+  let y = HEAD, rows = "";
+  packed.forEach(([name, ts, placed, subRows]) => {
+    const lh = subRows * SLOT;
+    rows += `<div class="lane-bg" style="top:${y}px;height:${lh}px"></div>` +
+      `<div class="lane-label-wrap" style="top:${y}px;height:${lh}px"><div class="lane-label"><div>${escapeHtml(name)}<small>${ts.length} task${ts.length !== 1 ? "s" : ""}</small></div></div></div>`;
+    placed.forEach(({ t, r }) => {
+      const top = y + r * SLOT, idx = tasks.indexOf(t);
+      const f = fillOf(t), c = cmpShade(f);
       const delta = cmpWorkdayDiff(t.planEnd, t.actEnd);
-      const dCls = delta > 0 ? "late" : delta < 0 ? "early" : "";
-      const dTxt = delta == null ? "–" : delta === 0 ? "0" : (delta > 0 ? "+" : "") + delta + "d";
-      const idx = tasks.indexOf(t);
-      let bars = "";
-      if (t.planStart) bars += `<div class="cmp-bar plan" data-i="${idx}" data-k="plan" style="--c:${c};left:${x(t.planStart)}px;width:${(cmpDayIndex(t.planEnd, t.planStart) + 1) * CMP_PX_PER_DAY}px"></div>`;
-      if (t.actStart) {
-        const ax = x(t.actStart), aw = (cmpDayIndex(t.actEnd, t.actStart) + 1) * CMP_PX_PER_DAY;
-        bars += `<div class="cmp-bar act" data-i="${idx}" data-k="act" style="--c:${c};left:${ax}px;width:${aw}px"></div>`;
-        if (delta) bars += `<div class="cmp-delta ${dCls}" style="left:${ax + aw}px">${dTxt}</div>`;
+      const name = cmpTaskName(t);
+      if (t.planStart) {
+        const w = (cmpDayIndex(t.planEnd, t.planStart) + 1) * PX - 2;
+        rows += `<div class="cmp-bar plan" data-i="${idx}" data-k="plan" style="--c:${c};left:${x(t.planStart)}px;top:${top + 4}px;width:${w}px"><span class="bar-text">${escapeHtml(name)}</span></div>`;
+      } else {
+        // No plan dates in the sheet: keep the label in the plan slot, unboxed.
+        rows += `<div class="cmp-bar noplan" data-i="${idx}" data-k="act" style="left:${x(t.actStart)}px;top:${top + 4}px"><span class="bar-text">${escapeHtml(name)}</span><i>no plan dates</i></div>`;
       }
-      html += `<div class="cmp-row" style="height:${CMP_ROW_H}px"><div class="cmp-side" style="width:${sideW}px">` +
-        `<div class="name" title="${escapeHtml(cmpTaskName(t))}"><b>${escapeHtml(t.title)}</b><small>${escapeHtml([t.item, t.jira].filter(Boolean).join(" · "))}</small></div>` +
-        `<div class="num">${fmt(t.planStart)}</div><div class="num">${fmt(t.planEnd)}</div>` +
-        `<div class="num actual">${fmt(t.actStart)}</div><div class="num actual">${fmt(t.actEnd)}</div>` +
-        `<div class="num ${dCls}">${dTxt}</div></div>` +
-        `<div class="cmp-track" style="width:${W}px;height:${CMP_ROW_H}px">${stripes}${todayLine}${bars}</div></div>`;
+      if (t.actStart) {
+        const ax = x(t.actStart), aw = (cmpDayIndex(t.actEnd, t.actStart) + 1) * PX - 2;
+        rows += `<div class="cmp-bar act" data-i="${idx}" data-k="act" style="--c:${c};--f:${f};left:${ax}px;top:${top + 28}px;width:${aw}px"></div>`;
+        if (delta) rows += `<div class="cmp-delta ${delta > 0 ? "late" : "early"}" style="left:${ax + aw}px;top:${top + 28}px">${delta > 0 ? "+" : ""}${delta}d</div>`;
+      }
     });
+    y += lh;
   });
-  grid.innerHTML = html;
 
-  // Scroll so today (or the start) sits near the left edge of the chart.
+  grid.style.width = W + "px";
+  grid.style.height = H + "px";
+  grid.innerHTML = `<div class="cmp-head" style="width:${W}px">${head}</div>${back}${rows}`;
+
+  // Plan labels never get clipped: text wider than its bar simply runs past
+  // the end, same as the Product Timeline.
   const focus = today >= origin && today <= last ? today : origin;
-  document.getElementById("compare-wrap").scrollLeft = Math.max(0, x(focus) - 7 * CMP_PX_PER_DAY);
+  document.getElementById("compare-wrap").scrollLeft = Math.max(0, x(focus) - LW - 7 * PX);
+}
+
+// Darker border tone of a pastel palette colour (for dashed plan / actual outline).
+function cmpShade(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = (v) => Math.round(v * 0.55).toString(16).padStart(2, "0");
+  return "#" + f(n >> 16) + f((n >> 8) & 255) + f(n & 255);
 }
 
 function cmpTooltip(t, kind) {
@@ -3645,9 +3693,9 @@ function cmpTooltip(t, kind) {
   return `<b>${escapeHtml(cmpTaskName(t))}</b><br>` +
     `<span style="color:#9ca3af">${escapeHtml([t.assignee, t.jira, t.status].filter(Boolean).join(" · "))}</span>` +
     `<table style="margin-top:4px;border-collapse:collapse;font-size:12px">` +
-    r("Plan", range(t.planStart, t.planEnd), kind === "plan") +
+    r("Plan", t.planStart ? range(t.planStart, t.planEnd) : "no plan dates", kind === "plan") +
     r("Estimate", md(t.est), kind === "plan") +
-    r("Actual", range(t.actStart, t.actEnd), kind === "act") +
+    r("Actual", t.actStart ? range(t.actStart, t.actEnd) : "not started", kind === "act") +
     r("Actual duration", md(t.actDur), kind === "act") +
     r("Due variance", delta == null ? "–" : delta === 0 ? "on plan" : `${delta > 0 ? "+" : ""}${delta} working day${Math.abs(delta) === 1 ? "" : "s"} ${delta > 0 ? "late" : "early"}`) +
     `</table>`;
