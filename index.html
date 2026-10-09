@@ -299,7 +299,7 @@
   #view-mode, #compare-feature{display:none;}
   body.compare-mode #timeline-wrap, body.compare-mode #legend,
   body.compare-mode #mobile-hscroll, body.compare-mode #mobile-vscroll,
-  body.compare-mode #btn-undo, body.compare-mode #btn-redo, body.compare-mode #btn-today,
+  body.compare-mode #btn-undo, body.compare-mode #btn-redo,
   body.compare-mode #btn-legend-toggle, body.compare-mode #btn-apply-frd-spec,
   body.compare-mode #btn-align-waterfall, body.compare-mode #assignee-filter,
   body.compare-mode #activity-filter, body.compare-mode #feature-filter,
@@ -343,7 +343,7 @@
   <div id="current-assignee-banner"></div>
   <div id="toolbar-controls">
     <select id="product-line" title="Product line (source sheet)"></select>
-    <select id="view-mode" title="View"><option value="timeline">Product Timeline</option><option value="compare">Development Comparison</option></select>
+    <select id="view-mode" title="View"><option value="timeline">Product Timeline</option><option value="compare">Dev Comparison</option></select>
     <select id="compare-feature" title="Feature"></select>
     <button id="btn-signin">Sign in with Google</button>
     <button id="btn-reload" style="display:none;">Reload from Sheet</button>
@@ -548,7 +548,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-g";
+const BUILD_ID = "2026-10-09-h";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -1180,7 +1180,9 @@ document.getElementById("btn-signin").addEventListener("click", () => {
 
 document.getElementById("btn-reload").addEventListener("click", loadData);
 
-document.getElementById("btn-today").addEventListener("click", jumpToToday);
+document.getElementById("btn-today").addEventListener("click", () => {
+  if (document.body.classList.contains("compare-mode")) cmpJumpToToday(); else jumpToToday();
+});
 
 function jumpToToday(instant) {
   if (!minDate) return;
@@ -3673,8 +3675,17 @@ function renderCompare(tasks) {
 
   // Plan labels never get clipped: text wider than its bar simply runs past
   // the end, same as the Product Timeline.
-  const focus = today >= origin && today <= last ? today : origin;
-  document.getElementById("compare-wrap").scrollLeft = Math.max(0, x(focus) - LW - 7 * PX);
+  grid._todayX = today >= origin && today <= last ? x(today) : null;
+  grid._originX = LW;
+  cmpJumpToToday(true);
+}
+
+// Scrolls the comparison so today sits a week in from the left edge
+// (or to the start, when today is outside the plan's range).
+function cmpJumpToToday(instant) {
+  const grid = document.getElementById("cmp-grid"), wrap = document.getElementById("compare-wrap");
+  const left = grid._todayX == null ? 0 : Math.max(0, grid._todayX - (grid._originX || 0) - 7 * CMP_PX_PER_DAY);
+  wrap.scrollLeft = left;
 }
 
 // Darker border tone of a pastel palette colour (for dashed plan / actual outline).
@@ -3704,7 +3715,7 @@ function applyViewMode() {
   const on = viewMode === "compare" && COMPARE_SOURCES.includes(sourceId);
   document.body.classList.toggle("compare-mode", on);
   document.getElementById("compare-feature").style.display = on ? "inline-block" : "none";
-  const title = `${CONFIG.LABEL} — ${on ? "Development Comparison" : "Product Timeline"}`;
+  const title = `${CONFIG.LABEL} — ${on ? "Dev Comparison" : "Product Timeline"}`;
   document.getElementById("page-title").textContent = title;
   document.title = title;
   const signedIn = accessToken && document.getElementById("signin-screen").style.display === "none";
