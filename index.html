@@ -326,6 +326,8 @@
   .cmp-bar.act{height:16px;background:var(--f);border:1.5px solid var(--c);}
   .cmp-bar.noplan{height:22px;padding:0 2px;}
   .cmp-bar.noplan i{color:var(--muted);font-size:10.5px;margin-left:6px;}
+  .cmp-bar.act.named{font-size:10.5px;padding:0 6px;}
+  .cmp-delta.before{padding-left:0;padding-right:5px;}
   .cmp-bar:hover{box-shadow:0 0 0 2px rgba(37,99,235,.35);z-index:4;}
   .cmp-delta{position:absolute;font-size:10.5px;font-weight:600;white-space:nowrap;padding-left:5px;pointer-events:none;z-index:2;line-height:16px;}
   .cmp-delta.late{color:#b91c1c;} .cmp-delta.early{color:#047857;}
@@ -546,7 +548,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-f";
+const BUILD_ID = "2026-10-09-g";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -3654,8 +3656,12 @@ function renderCompare(tasks) {
       }
       if (t.actStart) {
         const ax = x(t.actStart), aw = (cmpDayIndex(t.actEnd, t.actStart) + 1) * PX - 2;
-        rows += `<div class="cmp-bar act" data-i="${idx}" data-k="act" style="--c:${c};--f:${f};left:${ax}px;top:${top + 28}px;width:${aw}px"></div>`;
-        if (delta) rows += `<div class="cmp-delta ${delta > 0 ? "late" : "early"}" style="left:${ax + aw}px;top:${top + 28}px">${delta > 0 ? "+" : ""}${delta}d</div>`;
+        // Plan and actual far apart (they don't overlap): the plan label is out
+        // of sight from the actual bar, so the actual bar carries the name too.
+        // Its delta tag then moves to the bar's left so the name can run on.
+        const far = t.planStart && (t.actStart > t.planEnd || t.actEnd < t.planStart);
+        rows += `<div class="cmp-bar act${far ? " named" : ""}" data-i="${idx}" data-k="act" style="--c:${c};--f:${f};left:${ax}px;top:${top + 28}px;width:${aw}px">${far ? `<span class="bar-text">${escapeHtml(name)}</span>` : ""}</div>`;
+        if (delta) rows += `<div class="cmp-delta ${delta > 0 ? "late" : "early"}${far ? " before" : ""}" style="${far ? `right:${W - ax}px` : `left:${ax + aw}px`};top:${top + 28}px">${delta > 0 ? "+" : ""}${delta}d</div>`;
       }
     });
     y += lh;
