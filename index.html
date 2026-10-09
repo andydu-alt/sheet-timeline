@@ -452,6 +452,7 @@
   <button data-where="above">Add task above</button>
   <button data-where="below">Add task below</button>
   <div class="ctx-sep"></div>
+  <button data-action="unlink">Remove dependencies</button>
   <button data-action="delete" class="ctx-danger">Delete task</button>
 </div>
 
@@ -573,7 +574,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-q";
+const BUILD_ID = "2026-10-09-r";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -4250,6 +4251,12 @@ function attachBarContextMenu(bar, t, lane) {
 }
 
 document.getElementById("bar-context-menu").addEventListener("click", (e) => {
+  if (e.target.dataset && e.target.dataset.action === "unlink" && ctxTask) {
+    closeContextMenu();
+    const target = ctxTask;
+    exclusive(() => removeDependencies(target));
+    return;
+  }
   if (e.target.dataset && e.target.dataset.action === "delete" && ctxTask) {
     closeContextMenu();
     const target = ctxTask;
@@ -4648,6 +4655,54 @@ document.getElementById("nt-create").addEventListener("click", () => exclusive(a
     await loadData(); // resync in case the sheet changed part-way
   }
 }));
+
+/* ============================================================
+   Right-click → Remove dependencies.
+
+   Cuts every formula link into and out of a task so it can be moved freely:
+     - its own Start (and an End that reads another row) → the date it shows;
+     - every other task whose Start/End formula reads this task's row → the
+       date it shows (A → B → C: removing B's dependencies fixes B's Start
+       and C's Start; nothing moves).
+   An End computed only from the task's own Start and Estimate is kept — it
+   isn't a link to another task. One undo step restores every formula.
+   ============================================================ */
+async function removeDependencies(t) {
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const readsOtherRow = (f, own) => [...formulaReferencedRows(f)].some((r) => r !== own);
+  const own = [];
+  if (t.startIsFormula && readsOtherRow(t.startFormulaRaw, t.rowNum)) own.push("start");
+  if (t.endIsFormula && readsOtherRow(t.endFormulaRaw, t.rowNum)) own.push("end");
+  const deps = [];
+  for (const x of tasks) {
+    if (x === t) continue;
+    const fields = [];
+    if (x.startIsFormula && formulaReferencedRows(x.startFormulaRaw).has(t.rowNum)) fields.push("start");
+    if (x.endIsFormula && formulaReferencedRows(x.endFormulaRaw).has(t.rowNum)) fields.push("end");
+    if (fields.length) deps.push({ x, fields });
+  }
+  const name = blockFullName(t);
+  if (!own.length && !deps.length) {
+    window.alert(`"${name}" has no dependencies — its dates don't follow another task, and no task follows it.`);
+    return;
+  }
+  const lines = [];
+  if (own.length) lines.push(`• "${name}" — ${own.join(" and ")} becomes a fixed date (${own.map((f) => fmtDate(t[f])).join(" / ")})`);
+  deps.slice(0, 8).forEach(({ x, fields }) => lines.push(`• "${blockFullName(x)}" (${x.assignee}) — ${fields.join(" and ")} becomes a fixed date (${fields.map((f) => fmtDate(x[f])).join(" / ")})`));
+  if (deps.length > 8) lines.push(`• …and ${deps.length - 8} more`);
+  if (!window.confirm(`Remove all dependencies of "${name}"?\n\n${lines.join("\n")}\n\nNothing moves now — the dates just stop following each other, so you can move this task freely. You can undo this.`)) return;
+
+  commitUndoPoint(snapshotState());
+  try {
+    for (const f of own) await saveField(t, f);
+    for (const { x, fields } of deps) for (const f of fields) await saveField(x, f);
+    buildLanes(); render();
+    setStatus(`Removed dependencies of "${name}" · ${own.length + deps.reduce((n, d) => n + d.fields.length, 0)} date(s) fixed · ${new Date().toLocaleTimeString()}`);
+  } catch (err) {
+    reportSaveFailure("Remove dependencies", err);
+    await loadData();
+  }
+}
 
 /* ============================================================
    Right-click → Delete task.
