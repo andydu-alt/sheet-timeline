@@ -574,7 +574,7 @@
    CONFIG — fill these in before deploying
    ============================================================ */
 // Shown in the load status line so it is obvious which copy of the page is running.
-const BUILD_ID = "2026-10-09-r";
+const BUILD_ID = "2026-10-12-a";
 const CLIENT_ID = "1085131580879-4ne61amqc10srbcrhqf6i2buddjiojg8.apps.googleusercontent.com";
 
 /* Product lines. Each entry names which spreadsheet/tab to read, plus the
@@ -1632,7 +1632,13 @@ function featureKey(feature) {
    spell it both "(w D&Q)" and "(D&Q)" and capitalise it inconsistently. */
 const DERIVED_TASK_RE = /\(\s*w?\s*D\s*&\s*Q\s*\)/i;
 function isDerivedTask(t) {
-  return DERIVED_TASK_RE.test(t.activity || "") || DERIVED_TASK_RE.test(t.taskName || "");
+  return DERIVED_TASK_RE.test(t.activity || "") || DERIVED_TASK_RE.test(t.taskName || "") ||
+    (t.startIsFormula && AGGREGATE_FORMULA_RE.test(t.startFormulaRaw || "")) ||
+    (t.endIsFormula && AGGREGATE_FORMULA_RE.test(t.endFormulaRaw || ""));
+}
+function isGroupLabel(assignee, activity) {
+  const a = (assignee || "").trim().toLowerCase();
+  return /^(feature|features|maintenance|improvement|support|group|total)$/.test(a) || a === (activity || "").trim().toLowerCase();
 }
 // Full block name exactly as the bar shows it ("Feature • Activity" or
 // "Feature • Task", per BAR_DETAIL) — used in confirm dialogs so the user
@@ -1731,7 +1737,12 @@ async function loadData() {
       // Group/summary rows (e.g. Start = "=min(F5:F13)", End = "=MAX(G5:G13)")
       // aren't tasks — they roll up the block below them. Rendering them would
       // invent a bogus lane named after the group label, so drop them.
-      if (AGGREGATE_FORMULA_RE.test(startFormulaRaw) || AGGREGATE_FORMULA_RE.test(endFormulaRaw)) { skippedAggregate++; return; }
+      // Only a GROUP row is skipped — its Assignee is a label ("Feature",
+      // "MAINTENANCE", or the same text as its Activity). A real person's row
+      // with =MIN(G98:G101)/=MAX(H98:H101) is a task spanning its sibling
+      // rows (e.g. "FRD Update (w Dev/QA)"): shown, but locked like the
+      // "(w D&Q)" tasks, since its dates come from those rows.
+      if ((AGGREGATE_FORMULA_RE.test(startFormulaRaw) || AGGREGATE_FORMULA_RE.test(endFormulaRaw)) && isGroupLabel(assignee, activity)) { skippedAggregate++; return; }
       const startIsFormula = startFormulaRaw.startsWith("=");
       const endIsFormula = endFormulaRaw.startsWith("=");
       const estRaw = row[C.EST] || "";
